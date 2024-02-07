@@ -1,0 +1,115 @@
+package artery.application.misbehavior;
+
+//simple MisbehaviorCpmService like artery.application.ItsG5Service
+simple MisbehaviorCpmService like artery.application.BaseCpmService
+{
+    parameters:
+        @signal[CpmReceived](type=CpmObject);
+        @signal[CpmSent](type=CpmObject);
+        @signal[misbehaviorAuthority.MisbehaviorAnnouncement](simtime_t);
+        @signal[newMisbehaviorReport](type=MisbehaviorReportObject);
+
+        @statistic[reception](source=CpmReceived;record=vector(cpmStationId)?,vector(cpmGenerationDeltaTime)?);
+        @statistic[transmission](source=CpmSent;record=vector(cpmStationId)?,vector(cpmGenerationDeltaTime)?);
+
+        // evaluate DCC transmission interval restrictions
+        bool withDccRestriction = default(true);
+
+        // generation interval boundaries
+        double minInterval @unit(s) = default(0.1s);
+        double maxInterval @unit(s) = default(1.0s);
+
+        // generate at fixed rate (using minInterval, optionally restricted by DCC)
+        bool fixedRate = default(false);
+
+        // change in orientation triggering CAM generation (in degree)
+        double headingDelta = default(4.0);
+
+        // change in position triggering CAM generation
+        double positionDelta @unit(m) = default(4.0m);
+
+        // change in speed triggering CAM generation (in meter/second)
+        double speedDelta @unit(mps) = default(0.5mps);
+
+        // length of path history
+        volatile int pathHistoryLength = default(23);
+
+        string appName = default("MisbehaviorCpmService");
+
+        bool CpmLocationVisualizer = default(false);
+        int CpmLocationVisualizerMaxLength = default(500);
+
+
+        // ------ Attacks Parameters -- Start
+
+        // Specify static attack type according to attackTypes enum
+        volatile int StaticAttackType = default(-1);
+        string AttackType = default("");
+
+        // Constant Position Attack
+        double AttackConstantPositionMinLatitude = default(49.58);
+        double AttackConstantPositionMaxLatitude = default(49.63);
+        double AttackConstantPositionMinLongitude = default(6.09);
+        double AttackConstantPositionMaxLongitude = default(6.16);
+
+        // Constant Position Offset Attack
+        double AttackConstantPositionOffsetMaxLatitudeOffset = default(0.001);
+        double AttackConstantPositionOffsetMaxLongitudeOffset = default(0.001);
+
+        // Random Position Attack
+        double AttackRandomPositionMinLatitude = default(49.58);
+        double AttackRandomPositionMaxLatitude = default(49.63);
+        double AttackRandomPositionMinLongitude = default(6.09);
+        double AttackRandomPositionMaxLongitude = default(6.16);
+
+        // Random Position Offset Attack
+        double AttackRandomPositionOffsetMaxLatitudeOffset = default(0.001);
+        double AttackRandomPositionOffsetMaxLongitudeOffset = default(0.001);
+
+        // Constant Speed Attack
+        // Meters per Second
+        double AttackConstantSpeedMin = default(0.0);
+        double AttackConstantSpeedMax = default(163.82);
+
+        // Constant Speed Offset Attack
+        // only adds speed so that there aren't negative values
+        double AttackConstantSpeedOffsetMax = default(5.0);
+
+        // Random Speed Attack
+        // Meters per Second
+        double AttackRandomSpeedMin = default(0.0);
+        double AttackRandomSpeedMax = default(163.82);
+
+        // Random Speed Offset Attack
+        // only adds speed so that there aren't negative values
+        double AttackRandomSpeedOffsetMax = default(5.0);
+
+        // Eventual Stop Attack
+        double AttackEventualStopProbabilityThreshold = default(0.2);
+
+		// Disruptive Attack
+		int AttackDisruptiveBufferSize = default(50);
+		int AttackDisruptiveMinimumReceived = default(50);
+
+        // Denial of Service Attack
+        // Interval in ms
+        // Keep in mind that appl.middleware.updateInterval might need to be customized
+		int AttackDoSInterval = default(10);
+		bool AttackDoSIgnoreDCC = default(true);
+
+		// Stale Messages Attack
+		int AttackStaleDelayCount = default(50);
+
+        // Grid Sybil Attack
+        int AttackGridSybilVehicleCount = default(5);
+        int AttackGridSybilVehicleCountVariation = default(2);
+        bool AttackGridSybilSelfSybil = default(false);
+        double AttackGridSybilDistanceX = default(5);
+        double AttackGridSybilDistanceY = default(2);
+        double AttackGridSybilDistanceVariation = default(2);
+        double AttackGridSybilMaxDistanceFromRoad = default(5);
+
+        // Fake Report Attack
+        double AttackFakeReportInterval @unit(s) = default(2.0s);
+
+}

@@ -19,6 +19,7 @@
 #include <inet/common/ModuleAccess.h>
 #include <algorithm>
 #include <array>
+#include <fstream>
 
 using namespace omnetpp;
 
@@ -28,6 +29,7 @@ namespace artery {
     namespace {
         const simsignal_t refreshSignal = cComponent::registerSignal("EnvironmentModel.refresh");
         const simsignal_t traciInitSignal = cComponent::registerSignal("traci.init");
+        const simsignal_t traciStepSignal = cComponent::registerSignal("traci.step");
         const simsignal_t traciCloseSignal = cComponent::registerSignal("traci.close");
         const simsignal_t traciNodeAddSignal = cComponent::registerSignal("traci.node.add");
         const simsignal_t traciNodeRemoveSignal = cComponent::registerSignal("traci.node.remove");
@@ -41,6 +43,14 @@ namespace artery {
     }
 
     GlobalEnvironmentModel::~GlobalEnvironmentModel() {
+
+        std::ofstream envFile;
+
+        envFile.open ("results/env.txt", std::ios_base::app);
+
+
+        envFile << env.rdbuf();
+        envFile.close();
         clear();
     }
 
@@ -267,6 +277,7 @@ namespace artery {
         if (traci) {
             traci->subscribe(traciInitSignal, this);
             traci->subscribe(traciCloseSignal, this);
+            traci->subscribe(traciStepSignal, this);
 
             traci->subscribe(traciNodeAddSignal, this);
             traci->subscribe(traciNodeRemoveSignal, this);
@@ -296,7 +307,7 @@ namespace artery {
         removeVehicles();
     }
 
-    void GlobalEnvironmentModel::receiveSignal(cComponent *source, simsignal_t signal, const SimTime &, cObject *) {
+    void GlobalEnvironmentModel::receiveSignal(cComponent *source, simsignal_t signal, const omnetpp::SimTime & time, cObject *) {
         if (signal == traciInitSignal) {
             auto core = check_and_cast<traci::Core *>(source);
             fetchObstacles(*core->getAPI());
@@ -304,6 +315,9 @@ namespace artery {
             fetchJunctions(*core->getAPI());
         } else if (signal == traciCloseSignal) {
             clear();
+        }else  if (signal == traciStepSignal) {
+            //TODO: flush env in each step
+            recordStepGDM(time, env);
         }
     }
 
@@ -427,4 +441,62 @@ namespace artery {
         return found != mJunctions.end() ? found->second : nullptr;
     }
 
+    void GlobalEnvironmentModel::recordStepGDM(const omnetpp::SimTime & step, std::stringstream& buffer)
+    {
+        using namespace vanetza;
+        ostream_mutex.lock();
+
+        buffer << "{";
+        {
+            buffer << "\"step\": " << step << ",";
+            buffer << "\"objects\": [";
+            {
+                for (auto& object_kv : mObjects) {
+                    auto o = object_kv;
+                    // auto autline = o->getOutline();
+                    buffer << "{";
+                    {
+                        buffer << "\"station_type\": " << static_cast<int>(o->getVehicleData().getStationType()) << ","
+                               << "\"station_id\": " << o->getVehicleData().station_id() << ","
+                               << "\"yaw_rate\": " << o->getVehicleData().yaw_rate().value() << ","
+                               << "\"updated\": " << o->getVehicleData().updated() << ","
+                               << "\"speed\": " << o->getVehicleData().speed().value() << ","
+                               << "\"longitude\": " << o->getVehicleData().longitude().value() << ","
+                               << "\"latitude\": " << o->getVehicleData().latitude().value() << ","
+                               << "\"heading\": " << o->getVehicleData().heading().value() << ","
+                               << "\"curvature_confidence\": " << o->getVehicleData().curvature_confidence() << ","
+                               << "\"acceleration\": " << o->getVehicleData().acceleration().value() << ","
+                               << "\"position_x\": " << o->getVehicleData().position().x.value() << ","
+                               << "\"position_y\": " << o->getVehicleData().position().y.value() << ","
+                               << "\"width\": " << o->getWidth().value() << ","
+                               << "\"radius\": " << o->getRadius().value() << ","
+                               << "\"length\": " << o->getLength().value() << ","
+                               << "\"center_x\": " << o->getCentrePoint().x.value() << ","
+                               << "\"center_y\": " << o->getCentrePoint().y.value() << ","
+                               << "\"external_id\": \"" << o->getExternalId() << "\"";
+                    };
+
+                    buffer << "},";
+                }
+            };
+            buffer << "],";
+
+
+            buffer << "\"obstacles\": [";
+            {
+    //            for (auto& obstacle_kv : mObstacles) {
+    //                auto o = obstacle_kv.second;
+    //                // auto outline = o->getOutline();
+    //                buffer << "{";
+    //                {
+    //                    buffer << "\"obstacle_id\": \"" << o->getObstacleId() << "\"";
+    //                };
+    //                buffer << "},";
+    //            }
+            };
+            buffer << "],";
+        };
+        buffer << "},\n";
+        ostream_mutex.unlock();
+    }
 } // namespace artery

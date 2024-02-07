@@ -10,6 +10,9 @@
 #include "artery/envmod/service/CollectivePerceptionMockMessage.h"
 #include "artery/application/ItsG5Service.h"
 #include "artery/networking/PositionProvider.h"
+
+#include <fstream>
+#include <mutex>
 #include <unordered_set>
 #include <vector>
 
@@ -20,6 +23,7 @@ class CollectivePerceptionMockService : public ItsG5Service
 {
     public:
         virtual ~CollectivePerceptionMockService();
+        CollectivePerceptionMockService();
 
     protected:
         int numInitStages() const override;
@@ -29,7 +33,7 @@ class CollectivePerceptionMockService : public ItsG5Service
         void receiveSignal(omnetpp::cComponent*, omnetpp::simsignal_t, omnetpp::cObject*, omnetpp::cObject*) override;
         void generatePacket();
         void indicate(const vanetza::btp::DataIndication&, omnetpp::cPacket*) override;
-
+        void recordPacket(CollectivePerceptionMockMessage& cpm, std::stringstream& buffer);
     private:
         int mHostId = 0;
         const PositionProvider* mPositionProvider = nullptr;
@@ -46,6 +50,11 @@ class CollectivePerceptionMockService : public ItsG5Service
         unsigned mLengthHeader = 0;
         unsigned mLengthFovContainer = 0;
         unsigned mLengthObjectContainer = 0;
+
+        std::stringstream generatedCPMs;
+        std::stringstream receivedCPMs;
+        std::stringstream indicatedCPMs;
+        std::mutex ostream_mutex{};
 };
 
 } // namespace artery

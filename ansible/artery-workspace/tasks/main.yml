@@ -18,6 +18,10 @@
           - libssl-dev
           - python3-distutils
           - sumo
+          - asn1c
+          - libpcap-dev
+          - libcurl4-openssl-dev
+          - curl
   become: yes
 
 - name: clone Artery repository
@@ -48,7 +52,7 @@
       state: directory
 
 - name: configure Artery build directory
-  command: cmake {{ artery_source_dir }}
+  command: cmake -DVANETZA_ASN1_WITH_ASN1C=off {{ artery_source_dir }}
   args:
       chdir: "{{ artery_build_dir }}"
       creates: "{{ artery_build_dir }}/Makefile"

@@ -1,10 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <services>
-    <service type="artery.application.CaService">
+    <service type="artery.application.CaService" name="CA">
         <listener port="2001"/>
         <filters operator="and">
             <type pattern="artery.envmod.Car"/>
         </filters>
+    </service>
+    <service type="artery.envmod.service.CollectivePerceptionMockService" name="CP">
+        <listener port="3002" />
     </service>
     <service type="artery.application.misbehavior.MisbehaviorCaService">
         <listener port="2001"/>
@@ -18,6 +21,10 @@
             <type pattern="artery.envmod.Car"/>
             <type pattern="artery.application.misbehavior.MisbehaviorCar"/>
         </filters>
+    </service>
+
+    <service type="artery.envmod.service.EnvmodPrinter">
+        <listener port="3001" />
     </service>
 </services>
 

@@ -27,6 +27,7 @@
 #include <memory>
 #include <string>
 
+#include <mutex>
 
 namespace traci {
     class API;
@@ -184,7 +185,9 @@ namespace artery {
         omnetpp::cGroupFigure *mDrawObstacles = nullptr;
         omnetpp::cGroupFigure *mDrawVehicles = nullptr;
         std::set<std::string> mObstacleTypes;
-
+        std::stringstream env;
+        std::mutex ostream_mutex{};
+        void recordStepGDM(const omnetpp::SimTime & step, std::stringstream& buffer);
     };
 
 } // namespace artery

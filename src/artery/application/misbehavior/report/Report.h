@@ -7,6 +7,7 @@
 
 #include <string>
 #include "vanetza/asn1/cam.hpp"
+#include "vanetza/asn1/cpm.hpp"
 #include <vanetza/asn1/misbehavior_report.hpp>
 #include <bitset>
 #include "artery/application/misbehavior/util/DetectionLevels.h"
@@ -53,6 +54,8 @@ namespace artery {
     struct Evidence {
         std::vector<std::shared_ptr<vanetza::asn1::Cam>> reportedMessages;
         std::vector<std::shared_ptr<vanetza::asn1::Cam>> neighbourMessages;
+        std::vector<std::shared_ptr<vanetza::asn1::Cpm>> reportedCpmMessages;
+        std::vector<std::shared_ptr<vanetza::asn1::Cpm>> neighbourCpmMessages;
         SenderInfoContainer_t *senderInfo = nullptr;
         SenderSensorContainer_t *senderSensors = nullptr;
     };
@@ -63,12 +66,14 @@ namespace artery {
         Report(const vanetza::asn1::MisbehaviorReport &misbehaviorReport);
 
         Report(std::string reportId, std::shared_ptr<vanetza::asn1::Cam> cam, const uint64_t &generationTime);
+        Report(std::string reportId, std::shared_ptr<vanetza::asn1::Cpm> cpm, const uint64_t &generationTime);
 
         ~Report();
 
         std::string reportId;
         uint64_t generationTime;
         std::shared_ptr<vanetza::asn1::Cam> reportedMessage;
+        std::shared_ptr<vanetza::asn1::Cpm> reportedCpmMessage;
         std::shared_ptr<ReportedPseudonym> reportedPseudonym;
         std::shared_ptr<ReportingPseudonym> reportingPseudonym;
         DetectionType detectionType;
@@ -82,6 +87,7 @@ namespace artery {
                                   const std::bitset<16> &errorCode);
 
         void setReportedMessages(const std::vector<std::shared_ptr<vanetza::asn1::Cam>> &cams, const int &maxCamCount);
+        void setReportedMessages(const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &cams, const int &maxCpmCount);
 
         void setRelatedReport(const std::string &relatedReportId, const long &omittedReportsNumber);
 
@@ -96,6 +102,7 @@ namespace artery {
                                                    std::vector<std::shared_ptr<vanetza::asn1::Cam>> &messages);
 
         static std::shared_ptr<vanetza::asn1::Cam> getCamFromOpaque(const Opaque_t &data);
+        static std::shared_ptr<vanetza::asn1::Cpm> getCpmFromOpaque(const Opaque_t &data);
     };
 
 } // namespace artery

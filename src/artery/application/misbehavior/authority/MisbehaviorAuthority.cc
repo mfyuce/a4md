@@ -69,11 +69,16 @@ namespace artery {
         mParameters->reportCamRetentionCleanupInterval = par(
                 "reportCamRetentionCleanupInterval");
 
+        mParameters->reportCpmRetentionTime = par("reportCpmRetentionTime");
+        mParameters->reportCpmRetentionCleanupInterval = par(
+                "reportCpmRetentionCleanupInterval");
+
         mParameters->considerReporterScore = par("considerReporterScore");
         mParameters->considerEvidenceScore = par("considerEvidenceScore");
         mParameters->considerReportAge = par("considerReportAge");
         mParameters->considerReportValidity = par("considerReportValidity");
         mParameters->evidenceScoreMaxCamCount = par("evidenceScoreMaxCamCount");
+        mParameters->evidenceScoreMaxCpmCount = par("evidenceScoreMaxCpmCount");
 
 
         mParameters->misbehaviorThreshold = par("misbehaviorThreshold");
@@ -258,6 +263,9 @@ namespace artery {
             std::vector<StationID_t> stationIds = *reinterpret_cast<std::vector<StationID_t> *>(obj);
             auto misbehaviorCaService = check_and_cast<MisbehaviorCaService *>(source);
             processMisbehaviorAnnouncement(stationIds, misbehaviorCaService);
+
+            auto misbehaviorCpmService = check_and_cast<MisbehaviorCpmService *>(source);
+            processMisbehaviorAnnouncement(stationIds, misbehaviorCpmService);
         }
     }
 
@@ -297,6 +305,52 @@ namespace artery {
             std::shared_ptr<MisbehavingPseudonym> misbehavingPseudonym =
                     std::make_shared<MisbehavingPseudonym>(vehicleStationId,
                                                            misbehaviorCaService->getMisbehaviorType(),
+                                                           attackType, misbehavingVehicle);
+            mMisbehavingPseudonyms[vehicleStationId] = misbehavingPseudonym;
+            misbehavingVehicle->addPseudonym(misbehavingPseudonym);
+            std::string prefix =
+                    "misbehavingPseudonym_" + std::to_string(misbehavingPseudonym->getStationId()) + "_";
+            recordScalar((prefix + "misbehaviorType").c_str(), misbehavingPseudonym->getMisbehaviorType());
+            recordScalar((prefix + "attackType").c_str(), attackType);
+        }
+    }
+
+    void MisbehaviorAuthority::processMisbehaviorAnnouncement(const std::vector<StationID_t> &stationIds,
+                                                              MisbehaviorCpmService *misbehaviorCpmService) {
+        if (stationIds.size() > 1) {
+            StationID_t vehicleStationId = stationIds.front();
+            attackTypes::AttackTypes attackType = misbehaviorCpmService->getAttackType();
+            std::shared_ptr<MisbehavingVehicle> misbehavingVehicle =
+                    std::make_shared<MisbehavingVehicle>(vehicleStationId,
+                                                         misbehaviorCpmService->getMisbehaviorType(),
+                                                         attackType);
+            mMisbehavingVehicles[vehicleStationId] = misbehavingVehicle;
+            mMisbehavingVehiclesByAttackType[attackType].insert(misbehavingVehicle);
+            for (const auto &stationId: stationIds) {
+                std::shared_ptr<MisbehavingPseudonym> misbehavingPseudonym =
+                        std::make_shared<MisbehavingPseudonym>(stationId,
+                                                               misbehaviorCpmService->getMisbehaviorType(),
+                                                               attackType, misbehavingVehicle);
+                mMisbehavingPseudonyms[stationId] = misbehavingPseudonym;
+                misbehavingVehicle->addPseudonym(misbehavingPseudonym);
+                std::string prefix =
+                        "misbehavingPseudonym_" + std::to_string(misbehavingPseudonym->getStationId()) + "_";
+                recordScalar((prefix + "misbehaviorType").c_str(), misbehavingPseudonym->getMisbehaviorType());
+                recordScalar((prefix + "attackType").c_str(), attackType);
+            }
+        } else {
+            StationID_t vehicleStationId = stationIds.front();
+            attackTypes::AttackTypes attackType = misbehaviorCpmService->getAttackType();
+            std::shared_ptr<MisbehavingVehicle> misbehavingVehicle =
+                    std::make_shared<MisbehavingVehicle>(vehicleStationId,
+                                                         misbehaviorCpmService->getMisbehaviorType(),
+                                                         attackType);
+            mMisbehavingVehicles[vehicleStationId] = misbehavingVehicle;
+            mMisbehavingVehiclesByAttackType[attackType].insert(misbehavingVehicle);
+
+            std::shared_ptr<MisbehavingPseudonym> misbehavingPseudonym =
+                    std::make_shared<MisbehavingPseudonym>(vehicleStationId,
+                                                           misbehaviorCpmService->getMisbehaviorType(),
                                                            attackType, misbehavingVehicle);
             mMisbehavingPseudonyms[vehicleStationId] = misbehavingPseudonym;
             misbehavingVehicle->addPseudonym(misbehavingPseudonym);

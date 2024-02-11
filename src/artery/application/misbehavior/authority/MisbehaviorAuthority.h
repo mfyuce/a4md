@@ -20,6 +20,7 @@
 #include "artery/application/misbehavior/report/ReportingPseudonym.h"
 #include "artery/application/misbehavior/report/Report.h"
 #include "artery/application/misbehavior/MisbehaviorCaService.h"
+#include "artery/application/misbehavior/MisbehaviorCpmService.h"
 #include "artery/application/misbehavior/util/HelperFunctions.h"
 #include "artery/application/misbehavior/fusion/BaseFusion.h"
 #include <artery/application/misbehavior/checks/BaseChecks.h>
@@ -116,6 +117,7 @@ namespace artery {
         omnetpp::cHistogram statsInvalidLevel2ReportEvidenceCount;
 
         void processMisbehaviorAnnouncement(const std::vector<StationID_t>& stationIds, MisbehaviorCaService *misbehaviourCaService);
+        void processMisbehaviorAnnouncement(const std::vector<StationID_t>& stationIds, MisbehaviorCpmService *misbehaviourCpmService);
 
         void processReport(const std::shared_ptr<Report> &report);
 

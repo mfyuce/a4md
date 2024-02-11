@@ -55,6 +55,7 @@ namespace artery {
                 Ieee1609Dot2Content ieee1609Dot2Content = *reportedMessageData.content;
                 if (ieee1609Dot2Content.present == Ieee1609Dot2Content_PR_unsecuredData) {
                     this->reportedMessage = getCamFromOpaque(ieee1609Dot2Content.choice.unsecuredData);
+                    this->reportedCpmMessage = getCpmFromOpaque(ieee1609Dot2Content.choice.unsecuredData);
                 }
             } else {
                 successfullyParsed = false;
@@ -167,8 +168,24 @@ namespace artery {
         }
     }
 
+    void Report::decodeMessageEvidenceContainer(const MessageEvidenceContainer &messageEvidenceContainer,
+                                                std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &messages) {
+        for (int i = 0; i < messageEvidenceContainer.list.count; i++) {
+            auto *ieee1609Dot2Content = ((EtsiTs103097Data_t *) messageEvidenceContainer.list.array[i])->content;
+            if (ieee1609Dot2Content->present == Ieee1609Dot2Content_PR_unsecuredData) {
+                messages.emplace_back(getCpmFromOpaque(ieee1609Dot2Content->choice.unsecuredData));
+            } else {
+                std::cout << "ignoring CAM, only unsigned CAMs can be processed" << std::endl;
+            }
+        }
+    }
     std::shared_ptr<vanetza::asn1::Cam> Report::getCamFromOpaque(const Opaque_t &data) {
         std::shared_ptr<vanetza::asn1::Cam> cam = std::make_shared<vanetza::asn1::Cam>();
+        cam->decode(vanetza::ByteBuffer(data.buf, data.buf + data.size));
+        return cam;
+    }
+    std::shared_ptr<vanetza::asn1::Cpm> Report::getCpmFromOpaque(const Opaque_t &data) {
+        std::shared_ptr<vanetza::asn1::Cpm> cpm = std::make_shared<vanetza::asn1::Cpm>();
         cam->decode(vanetza::ByteBuffer(data.buf, data.buf + data.size));
         return cam;
     }
@@ -181,6 +198,13 @@ namespace artery {
         score = 0;
     }
 
+    Report::Report(std::string reportId, std::shared_ptr<vanetza::asn1::Cpm> cam,
+                   const uint64_t &generationTime) : reportId(std::move(reportId)), generationTime(generationTime),
+                                                     reportedMessage(std::move(cam)) {
+        isValid = false;
+        successfullyParsed = false;
+        score = 0;
+    }
     void Report::setSemanticDetection(const detectionLevels::DetectionLevels &detectionLevel,
                                       const std::bitset<16> &errorCode) {
         detectionType.present = detectionTypes::SemanticType;
@@ -197,6 +221,16 @@ namespace artery {
             int limit = std::min((int) camCount - 1, maxCamCount);
             for (int i = (int) camCount - limit - 1; i < camCount; i++) {
                 evidence.reportedMessages.emplace_back(cams[i]);
+            }
+        }
+    }
+    void Report::setReportedMessages(const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &cams,
+                                     const int &maxCpmCount) {
+        int camCount = (int) cams.size();
+        if (camCount >= 1) {
+            int limit = std::min((int) camCount - 1, maxCpmCount);
+            for (int i = (int) camCount - limit - 1; i < camCount; i++) {
+                evidence.reportedCpmMessages.emplace_back(cams[i]);
             }
         }
     }
@@ -278,6 +312,13 @@ namespace artery {
                 semanticDetectionReferenceCam.detectionLevelCAM = detectionType.semantic->detectionLevel;
                 std::string encoded = detectionType.semantic->errorCode.to_string();
                 OCTET_STRING_fromBuf(&semanticDetectionReferenceCam.semanticDetectionErrorCodeCAM, encoded.c_str(),
+                                     (int) strlen(encoded.c_str()));
+
+
+                DetectionReferenceCAM_t &semanticDetectionReferenceCpm = semanticDetection.choice.semanticDetectionReferenceCAM;
+                semanticDetectionReferenceCpm.detectionLevelCAM = detectionType.semantic->detectionLevel;
+                std::string encoded = detectionType.semantic->errorCode.to_string();
+                OCTET_STRING_fromBuf(&semanticDetectionReferenceCpm.semanticDetectionErrorCodeCAM, encoded.c_str(),
                                      (int) strlen(encoded.c_str()));
                 break;
             }

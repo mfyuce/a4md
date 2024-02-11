@@ -188,7 +188,7 @@ namespace artery {
     }
 
     vanetza::asn1::Cpm
-    BaseCpmService::createCooperativeAwarenessMessage(uint16_t genDeltaTime) {
+    BaseCpmService::createCollectivePErceptionMessage(uint16_t genDeltaTime) {
         vanetza::asn1::Cpm message;
 
         ItsPduHeader_t &header = (*message).header;

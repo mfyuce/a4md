@@ -15,6 +15,12 @@
             <type pattern="artery.application.misbehavior.MisbehaviorCar"/>
         </filters>
     </service>
+    <service type="artery.application.misbehavior.MisbehaviorCpmService">
+        <listener port="2001"/>
+        <filters>
+            <type pattern="artery.application.misbehavior.MisbehaviorCar"/>
+        </filters>
+    </service>
     <service type="artery.application.misbehavior.detection.MisbehaviorDetectionService">
         <listener port="4712"/>
         <filters operator="or">

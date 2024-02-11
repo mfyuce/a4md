@@ -79,6 +79,7 @@ namespace artery {
         int checkType;
         double misbehaviorThreshold;
         int detectedSenderCamArrayMaxSize;
+        int detectedSenderCpmArrayMaxSize;
 
         double detectLevel4Probability;
         double detectLevel3Probability;
@@ -101,6 +102,7 @@ namespace artery {
         double maxSuddenAppearanceRange;
         double maxSuddenAppearanceTime;
         double maxCamFrequency;
+        double maxCpmFrequency;
         double maxOffroadSpeed;
         double maxDistanceFromRoad;
         double positionHeadingTime;
@@ -117,6 +119,7 @@ namespace artery {
 
     struct ReportParameters {
         int evidenceContainerMaxCamCount;
+        int evidenceContainerMaxCpmCount;
         int omittedReportsCount;
         bool omittedReportsCountPerErrorCode;
         bool broadcastReport;
@@ -133,12 +136,15 @@ namespace artery {
         double reportCleanupAge;
         double reportCamRetentionTime;
         double reportCamRetentionCleanupInterval;
+        double reportCpmRetentionTime;
+        double reportCpmRetentionCleanupInterval;
 
         bool considerReportAge;
         bool considerReportValidity;
         bool considerReporterScore;
         bool considerEvidenceScore;
         int evidenceScoreMaxCamCount;
+        int evidenceScoreMaxCpmCount;
 
         bool enableWebGui;
         std::string webGuiDataUrl;
@@ -152,6 +158,8 @@ namespace artery {
         // CAM Location Visualizer (PoI)
         bool CamLocationVisualizer;
         int CamLocationVisualizerMaxLength;
+        bool CpmLocationVisualizer;
+        int CpmLocationVisualizerMaxLength;
     };
 
     class F2MDParameters {

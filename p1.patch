@@ -1,0 +1,2233 @@
+Subject: [PATCH] Changes_cpm
+---
+Index: src/artery/application/BaseCpmService.cc
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/src/artery/application/BaseCpmService.cc b/src/artery/application/BaseCpmService.cc
+new file mode 100644
+--- /dev/null	(date 1707609065676)
++++ b/src/artery/application/BaseCpmService.cc	(date 1707609065676)
+@@ -0,0 +1,277 @@
++//
++// Created by bastian on 06.07.21.
++//
++
++#include "artery/application/BaseCpmService.h"
++#include "artery/application/misbehavior/util/HelperFunctions.h"
++#include "artery/utility/simtime_cast.h"
++#include <artery/traci/Cast.h>
++#include <vanetza/facilities/cpm_functions.hpp>
++#include <vanetza/btp/ports.hpp>
++#include <vanetza/dcc/transmission.hpp>
++#include <vanetza/dcc/transmit_rate_control.hpp>
++#include <boost/units/systems/si/prefixes.hpp>
++#include <boost/units/cmath.hpp>
++#include <chrono>
++
++namespace artery {
++
++    using namespace omnetpp;
++
++    Define_Module(BaseCpmService)
++
++    namespace {
++        auto microdegree = vanetza::units::degree * boost::units::si::micro;
++        auto decidegree = vanetza::units::degree * boost::units::si::deci;
++        auto degree_per_second = vanetza::units::degree / vanetza::units::si::second;
++        auto centimeter_per_second = vanetza::units::si::meter_per_second * boost::units::si::centi;
++
++        static const simsignal_t scSignalCpmSent = cComponent::registerSignal("CpmSent");
++    }
++
++    bool BaseCpmService::staticInitializationComplete = false;
++    std::shared_ptr<const traci::API> BaseCpmService::mTraciAPI;
++    traci::Boundary BaseCpmService::mSimulationBoundary;
++    std::chrono::milliseconds BaseCpmService::scLowFrequencyContainerInterval;
++
++    template<typename T, typename U>
++    long BaseCpmService::round(const boost::units::quantity<T> &q, const U &u) {
++        boost::units::quantity<U> v{q};
++        return std::round(v.value());
++    }
++
++    SpeedValue_t BaseCpmService::buildSpeedValue(const vanetza::units::Velocity &v) {
++        static const vanetza::units::Velocity lower{0.0 * boost::units::si::meter_per_second};
++        static const vanetza::units::Velocity upper{163.82 * boost::units::si::meter_per_second};
++
++        SpeedValue_t speed = SpeedValue_unavailable;
++        if (v >= upper) {
++            speed = 16382; // see CDD A.74 (TS 102 894 v1.2.1)
++        } else if (v >= lower) {
++            speed = round(v, centimeter_per_second) * SpeedValue_oneCentimeterPerSec;
++        }
++        return speed;
++    }
++
++    BaseCpmService::BaseCpmService() : mGenCpmMin{100, SIMTIME_MS},
++                                     mGenCpmMax{1000, SIMTIME_MS},
++                                     mGenCpm(mGenCpmMax),
++                                     mGenCpmLowDynamicsCounter(0),
++                                     mGenCpmLowDynamicsLimit(3) {
++    }
++
++    void BaseCpmService::initialize() {
++        ItsG5BaseService::initialize();
++
++        if (!staticInitializationComplete) {
++            staticInitializationComplete = true;
++            mTraciAPI = getFacilities().get_const<traci::VehicleController>().getTraCI();
++            mSimulationBoundary = traci::Boundary{mTraciAPI->simulation.getNetBoundary()};
++            scLowFrequencyContainerInterval = std::chrono::milliseconds(500);
++        }
++
++        mNetworkInterfaceTable = &getFacilities().get_const<NetworkInterfaceTable>();
++        mVehicleDataProvider = &getFacilities().get_const<VehicleDataProvider>();
++        mTimer = &getFacilities().get_const<Timer>();
++        mLocalDynamicMap = &getFacilities().get_mutable<artery::LocalDynamicMap>();
++        mVehicleController = &getFacilities().get_const<traci::VehicleController>();
++
++        mVehicleLength = (long) (mVehicleController->getLength().value() * 10);
++        mVehicleWidth = (long) (mVehicleController->getWidth().value() * 10);
++        mStationId = mVehicleDataProvider->station_id();
++        WATCH(mStationId);
++
++        // avoid unreasonable high elapsed time values for newly inserted vehicles
++        mLastCpmTimestamp = simTime();
++
++        // first generated CPM shall include the low frequency container
++        mLastLowCpmTimestamp = mLastCpmTimestamp - artery::simtime_cast(scLowFrequencyContainerInterval);
++
++        // generation rate boundaries
++        mGenCpmMin = par("minInterval");
++        mGenCpmMax = par("maxInterval");
++        mGenCpm = mGenCpmMax;
++
++        // vehicle dynamics thresholds
++        mHeadingDelta = vanetza::units::Angle{par("headingDelta").doubleValue() * vanetza::units::degree};
++        mPositionDelta = par("positionDelta").doubleValue() * vanetza::units::si::meter;
++        mSpeedDelta = par("speedDelta").doubleValue() * vanetza::units::si::meter_per_second;
++
++        mDccRestriction = par("withDccRestriction");
++        mFixedRate = par("fixedRate");
++
++        // look up primary channel for CA
++        mPrimaryChannel = getFacilities().get_const<MultiChannelPolicy>().primaryChannel(vanetza::aid::CA);
++    }
++
++    bool BaseCpmService::checkTriggeringConditions(const SimTime &T_now) {
++        // provide variables named like in EN 302 637-2 V1.3.2 (section 6.1.3)
++        SimTime &T_GenCpm = mGenCpm;
++        const SimTime &T_GenCpmMin = mGenCpmMin;
++        const SimTime &T_GenCpmMax = mGenCpmMax;
++        const SimTime T_GenCpmDcc = mDccRestriction ? genCpmDcc() : T_GenCpmMin;
++        const SimTime T_elapsed = T_now - mLastCpmTimestamp;
++
++        bool trigger = false;
++        if (T_elapsed >= T_GenCpmDcc) {
++            if (mFixedRate) {
++                trigger = true;
++            } else if (checkHeadingDelta() || checkPositionDelta() || checkSpeedDelta()) {
++                trigger = true;
++                T_GenCpm = std::min(T_elapsed, T_GenCpmMax); /*< if middleware update interval is too long */
++                mGenCpmLowDynamicsCounter = 0;
++            } else if (T_elapsed >= T_GenCpm) {
++                trigger = true;
++                if (++mGenCpmLowDynamicsCounter >= mGenCpmLowDynamicsLimit) {
++                    T_GenCpm = T_GenCpmMax;
++                }
++            }
++        }
++        return trigger;
++    }
++
++    bool BaseCpmService::checkHeadingDelta() const {
++        return !vanetza::facilities::similar_heading(mLastCpmHeading, mVehicleDataProvider->heading(), mHeadingDelta);
++    }
++
++    bool BaseCpmService::checkPositionDelta() const {
++        return (distance(mLastCpmPosition, mVehicleDataProvider->position()) > mPositionDelta);
++    }
++
++    bool BaseCpmService::checkSpeedDelta() const {
++        return abs(mLastCpmSpeed - mVehicleDataProvider->speed()) > mSpeedDelta;
++    }
++
++    SimTime BaseCpmService::genCpmDcc() {
++        // network interface may not be ready yet during initialization, so look it up at this later point
++        auto networkInterfaceChannel = mNetworkInterfaceTable->select(mPrimaryChannel);
++        vanetza::dcc::TransmitRateThrottle *trc = networkInterfaceChannel
++                                                  ? networkInterfaceChannel->getDccEntity().getTransmitRateThrottle()
++                                                  : nullptr;
++        if (!trc) {
++            throw cRuntimeError("No DCC TRC found for CA's primary channel %i", mPrimaryChannel);
++        }
++
++        static const vanetza::dcc::TransmissionLite ca_tx(vanetza::dcc::Profile::DP2, 0);
++        vanetza::Clock::duration interval = trc->interval(ca_tx);
++        SimTime dcc{std::chrono::duration_cast<std::chrono::milliseconds>(interval).count(), SIMTIME_MS};
++        return std::min(mGenCpmMax, std::max(mGenCpmMin, dcc));
++    }
++
++    void BaseCpmService::finalizeAndSendCpm(vanetza::asn1::Cpm cpm, const SimTime &T_now) {
++        mLastCpmPosition = mVehicleDataProvider->position();
++        mLastCpmSpeed = mVehicleDataProvider->speed();
++        mLastCpmHeading = mVehicleDataProvider->heading();
++        mLastCpmTimestamp = T_now;
++        if (T_now - mLastLowCpmTimestamp >= artery::simtime_cast(scLowFrequencyContainerInterval)) {
++            addLowFrequencyContainer(cpm, par("pathHistoryLength"));
++            mLastLowCpmTimestamp = T_now;
++        }
++
++        using namespace vanetza;
++        btp::DataRequestB request;
++        request.destination_port = btp::ports::CPM;
++        request.gn.its_aid = aid::CA;
++        request.gn.transport_type = geonet::TransportType::SHB;
++        request.gn.maximum_lifetime = geonet::Lifetime{geonet::Lifetime::Base::One_Second, 1};
++        request.gn.traffic_class.tc_id(static_cast<unsigned>(dcc::Profile::DP2));
++        request.gn.communication_profile = geonet::CommunicationProfile::ITS_G5;
++
++        CpmObject obj(std::move(cpm));
++        emit(scSignalCpmSent, &obj);
++
++        using CpmByteBuffer = convertible::byte_buffer_impl<asn1::CPM>;
++        std::unique_ptr<geonet::DownPacket> payload{new geonet::DownPacket()};
++        std::unique_ptr<convertible::byte_buffer> buffer{new CpmByteBuffer(obj.shared_ptr())};
++        payload->layer(OsiLayer::Application) = std::move(buffer);
++        this->request(request, std::move(payload));
++    }
++
++    vanetza::asn1::Cpm
++    BaseCpmService::createCooperativeAwarenessMessage(uint16_t genDeltaTime) {
++        vanetza::asn1::Cpm message;
++
++        ItsPduHeader_t &header = (*message).header;
++        header.protocolVersion = 2;
++        header.messageID = ItsPduHeader__messageID_cpm;
++        header.stationID = mVehicleDataProvider->station_id();
++
++        CoopAwareness_t &cpm = (*message).cpm;
++        cpm.generationDeltaTime = genDeltaTime * GenerationDeltaTime_oneMilliSec;
++        BasicContainer_t &basic = cpm.cpmParameters.basicContainer;
++        basic.stationType = StationType_passengerCar;
++        basic.referencePosition = mVehicleDataProvider->approximateReferencePosition();
++
++        HighFrequencyContainer_t &hfc = cpm.cpmParameters.highFrequencyContainer;
++        hfc.present = HighFrequencyContainer_PR_basicVehicleContainerHighFrequency;
++        BasicVehicleContainerHighFrequency &bvc = hfc.choice.basicVehicleContainerHighFrequency;
++        bvc.heading = mVehicleDataProvider->approximateHeading();
++        bvc.speed = mVehicleDataProvider->approximateSpeed();
++        bvc.driveDirection = mVehicleDataProvider->speed().value() >= 0.0 ?
++                             DriveDirection_forward : DriveDirection_backward;
++        bvc.longitudinalAcceleration = mVehicleDataProvider->approximateAcceleration();
++        bvc.curvature.curvatureValue =
++                abs(mVehicleDataProvider->curvature() / vanetza::units::reciprocal_metre) * 10000.0;
++        if (bvc.curvature.curvatureValue >= 1023) {
++            bvc.curvature.curvatureValue = 1023;
++        }
++        bvc.curvature.curvatureConfidence = CurvatureConfidence_unavailable;
++        bvc.curvatureCalculationMode = CurvatureCalculationMode_yawRateUsed;
++        bvc.yawRate.yawRateValue =
++                round(mVehicleDataProvider->yaw_rate(), degree_per_second) * YawRateValue_degSec_000_01ToLeft * 100.0;
++        if (bvc.yawRate.yawRateValue < -32766 || bvc.yawRate.yawRateValue > 32766) {
++            bvc.yawRate.yawRateValue = YawRateValue_unavailable;
++        }
++        bvc.vehicleLength.vehicleLengthValue = mVehicleLength;
++        bvc.vehicleLength.vehicleLengthConfidenceIndication =
++                VehicleLengthConfidenceIndication_noTrailerPresent;
++        bvc.vehicleWidth = mVehicleWidth;
++
++        std::string error;
++        if (!message.validate(error)) {
++            throw cRuntimeError("Invalid High Frequency CPM: %s", error.c_str());
++        }
++
++//        const vanetza::units::Duration delta{
++//                (simTime()).inUnit(SIMTIME_MS) * boost::units::si::milli * boost::units::si::seconds
++//        };
++//
++//        if (delta >= 1721.974 * boost::units::si::seconds) {
++//            std::cout << "hi" << std::endl;
++//        }
++
++        return message;
++    }
++
++    void BaseCpmService::addLowFrequencyContainer(vanetza::asn1::CPM &message, unsigned pathHistoryLength) {
++        if (pathHistoryLength > 40) {
++            EV_WARN << "path history can contain 40 elements at maximum";
++            pathHistoryLength = 40;
++        }
++
++        LowFrequencyContainer_t *&lfc = message->cpm.cpmParameters.lowFrequencyContainer;
++        lfc = vanetza::asn1::allocate<LowFrequencyContainer_t>();
++        lfc->present = LowFrequencyContainer_PR_basicVehicleContainerLowFrequency;
++        BasicVehicleContainerLowFrequency &bvc = lfc->choice.basicVehicleContainerLowFrequency;
++        bvc.vehicleRole = VehicleRole_default;
++        bvc.exteriorLights.buf = static_cast<uint8_t *>(vanetza::asn1::allocate(1));
++        assert(nullptr != bvc.exteriorLights.buf);
++        bvc.exteriorLights.size = 1;
++        bvc.exteriorLights.buf[0] |= 1 << (7 - ExteriorLights_daytimeRunningLightsOn);
++        for (unsigned i = 0; i < pathHistoryLength; ++i) {
++            auto *pathPoint = vanetza::asn1::allocate<PathPoint>();
++            pathPoint->pathDeltaTime = vanetza::asn1::allocate<PathDeltaTime_t>();
++            *(pathPoint->pathDeltaTime) = 0;
++            pathPoint->pathPosition.deltaLatitude = DeltaLatitude_unavailable;
++            pathPoint->pathPosition.deltaLongitude = DeltaLongitude_unavailable;
++            pathPoint->pathPosition.deltaAltitude = DeltaAltitude_unavailable;
++            ASN_SEQUENCE_ADD(&bvc.pathHistory, pathPoint);
++        }
++
++        std::string error;
++        if (!message.validate(error)) {
++            throw cRuntimeError("Invalid Low Frequency CPM: %s", error.c_str());
++        }
++    }
++
++} // namespace artery
+\ No newline at end of file
+Index: src/artery/application/BaseCpmService.h
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/src/artery/application/BaseCpmService.h b/src/artery/application/BaseCpmService.h
+new file mode 100644
+--- /dev/null	(date 1707609065684)
++++ b/src/artery/application/BaseCpmService.h	(date 1707609065684)
+@@ -0,0 +1,92 @@
++//
++// Created by bastian on 06.07.21.
++//
++
++#ifndef ARTERY_BASECPMSERVICE_H
++#define ARTERY_BASECPMSERVICE_H
++
++#include "artery/application/ItsG5BaseService.h"
++#include "artery/application/VehicleDataProvider.h"
++#include <artery/traci/VehicleController.h>
++#include <vanetza/asn1/CPM.hpp>
++#include <vanetza/units/angle.hpp>
++#include <vanetza/units/velocity.hpp>
++#include <omnetpp.h>
++
++
++namespace artery {
++
++    class NetworkInterfaceTable;
++
++    class Timer;
++
++    class VehicleDataProvider;
++
++    class BaseCpmService : public ItsG5BaseService {
++
++    public:
++        BaseCpmService();
++
++        void initialize() override;
++
++    protected:
++
++        template<typename T, typename U>
++        static long round(const boost::units::quantity<T> &q, const U &u);
++
++        static SpeedValue_t buildSpeedValue(const vanetza::units::Velocity &v);
++
++        bool checkTriggeringConditions(const omnetpp::SimTime &);
++
++        bool checkHeadingDelta() const;
++
++        bool checkPositionDelta() const;
++
++        bool checkSpeedDelta() const;
++
++        omnetpp::SimTime genCpmDcc();
++
++        void finalizeAndSendCpm(vanetza::asn1::CPM cpm,const omnetpp::SimTime &T_now);
++
++        vanetza::asn1::CPM
++        createCooperativeAwarenessMessage(uint16_t genDeltaTime);
++
++        void addLowFrequencyContainer(vanetza::asn1::CPM &, unsigned pathHistoryLength = 0);
++
++        ChannelNumber mPrimaryChannel = channel::CCH;
++        const NetworkInterfaceTable *mNetworkInterfaceTable = nullptr;
++        const VehicleDataProvider *mVehicleDataProvider = nullptr;
++        const Timer *mTimer = nullptr;
++        LocalDynamicMap *mLocalDynamicMap = nullptr;
++        const traci::VehicleController *mVehicleController = nullptr;
++
++
++        omnetpp::SimTime mGenCpmMin;
++        omnetpp::SimTime mGenCpmMax;
++        omnetpp::SimTime mGenCpm;
++        unsigned mGenCpmLowDynamicsCounter;
++        unsigned mGenCpmLowDynamicsLimit;
++        Position mLastCpmPosition;
++        vanetza::units::Velocity mLastCpmSpeed;
++        vanetza::units::Angle mLastCpmHeading;
++        omnetpp::SimTime mLastCpmTimestamp;
++        omnetpp::SimTime mLastLowCpmTimestamp;
++        vanetza::units::Angle mHeadingDelta;
++        vanetza::units::Length mPositionDelta;
++        vanetza::units::Velocity mSpeedDelta;
++        VehicleWidth_t mVehicleWidth;
++        VehicleLengthValue_t mVehicleLength;
++
++        bool mDccRestriction;
++        bool mFixedRate;
++        long mStationId;
++
++        static bool staticInitializationComplete;
++        static std::shared_ptr<const traci::API> mTraciAPI;
++        static traci::Boundary mSimulationBoundary;
++        static std::chrono::milliseconds scLowFrequencyContainerInterval;
++    };
++
++
++} // namespace artery
++#endif //ARTERY_BASECPMSERVICE_H
+Index: src/artery/application/BaseCpmService.ned
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/src/artery/application/BaseCpmService.ned b/src/artery/application/BaseCpmService.ned
+new file mode 100644
+--- /dev/null	(date 1707609065692)
++++ b/src/artery/application/BaseCpmService.ned	(date 1707609065692)
+@@ -0,0 +1,21 @@
++//
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU Lesser General Public License as published by
++// the Free Software Foundation, either version 3 of the License, or
++// (at your option) any later version.
++// 
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU Lesser General Public License for more details.
++// 
++// You should have received a copy of the GNU Lesser General Public License
++// along with this program.  If not, see http://www.gnu.org/licenses/.
++// 
++
++package artery.application;
++
++//simple BaseCaService like ItsG5Service
++moduleinterface BaseCpmService
++{
++}
+Index: src/artery/envmod/GlobalEnvironmentModel.h
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/src/artery/envmod/GlobalEnvironmentModel.h b/src/artery/envmod/GlobalEnvironmentModel.h
+--- a/src/artery/envmod/GlobalEnvironmentModel.h	(revision 7e4d871b88d4e9db0e8b23f6ff45787d8b33c52d)
++++ b/src/artery/envmod/GlobalEnvironmentModel.h	(date 1707336219159)
+@@ -27,6 +27,7 @@
+ #include <memory>
+ #include <string>
+ 
++#include <mutex>
+ 
+ namespace traci {
+     class API;
+@@ -184,7 +185,9 @@
+         omnetpp::cGroupFigure *mDrawObstacles = nullptr;
+         omnetpp::cGroupFigure *mDrawVehicles = nullptr;
+         std::set<std::string> mObstacleTypes;
+-
++        std::stringstream env;
++        std::mutex ostream_mutex{};
++        void recordStepGDM(const omnetpp::SimTime & step, std::stringstream& buffer);
+     };
+ 
+ } // namespace artery
+Index: src/artery/envmod/GlobalEnvironmentModel.cc
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/src/artery/envmod/GlobalEnvironmentModel.cc b/src/artery/envmod/GlobalEnvironmentModel.cc
+--- a/src/artery/envmod/GlobalEnvironmentModel.cc	(revision 7e4d871b88d4e9db0e8b23f6ff45787d8b33c52d)
++++ b/src/artery/envmod/GlobalEnvironmentModel.cc	(date 1707336205463)
+@@ -19,6 +19,7 @@
+ #include <inet/common/ModuleAccess.h>
+ #include <algorithm>
+ #include <array>
++#include <fstream>
+ 
+ using namespace omnetpp;
+ 
+@@ -28,6 +29,7 @@
+     namespace {
+         const simsignal_t refreshSignal = cComponent::registerSignal("EnvironmentModel.refresh");
+         const simsignal_t traciInitSignal = cComponent::registerSignal("traci.init");
++        const simsignal_t traciStepSignal = cComponent::registerSignal("traci.step");
+         const simsignal_t traciCloseSignal = cComponent::registerSignal("traci.close");
+         const simsignal_t traciNodeAddSignal = cComponent::registerSignal("traci.node.add");
+         const simsignal_t traciNodeRemoveSignal = cComponent::registerSignal("traci.node.remove");
+@@ -41,6 +43,14 @@
+     }
+ 
+     GlobalEnvironmentModel::~GlobalEnvironmentModel() {
++
++        std::ofstream envFile;
++
++        envFile.open ("results/env.txt", std::ios_base::app);
++
++
++        envFile << env.rdbuf();
++        envFile.close();
+         clear();
+     }
+ 
+@@ -267,6 +277,7 @@
+         if (traci) {
+             traci->subscribe(traciInitSignal, this);
+             traci->subscribe(traciCloseSignal, this);
++            traci->subscribe(traciStepSignal, this);
+ 
+             traci->subscribe(traciNodeAddSignal, this);
+             traci->subscribe(traciNodeRemoveSignal, this);
+@@ -296,7 +307,7 @@
+         removeVehicles();
+     }
+ 
+-    void GlobalEnvironmentModel::receiveSignal(cComponent *source, simsignal_t signal, const SimTime &, cObject *) {
++    void GlobalEnvironmentModel::receiveSignal(cComponent *source, simsignal_t signal, const omnetpp::SimTime & time, cObject *) {
+         if (signal == traciInitSignal) {
+             auto core = check_and_cast<traci::Core *>(source);
+             fetchObstacles(*core->getAPI());
+@@ -304,6 +315,9 @@
+             fetchJunctions(*core->getAPI());
+         } else if (signal == traciCloseSignal) {
+             clear();
++        }else  if (signal == traciStepSignal) {
++            //TODO: flush env in each step
++            recordStepGDM(time, env);
+         }
+     }
+ 
+@@ -427,4 +441,62 @@
+         return found != mJunctions.end() ? found->second : nullptr;
+     }
+ 
++    void GlobalEnvironmentModel::recordStepGDM(const omnetpp::SimTime & step, std::stringstream& buffer)
++    {
++        using namespace vanetza;
++        ostream_mutex.lock();
++
++        buffer << "{";
++        {
++            buffer << "\"step\": " << step << ",";
++            buffer << "\"objects\": [";
++            {
++                for (auto& object_kv : mObjects) {
++                    auto o = object_kv;
++                    // auto autline = o->getOutline();
++                    buffer << "{";
++                    {
++                        buffer << "\"station_type\": " << static_cast<int>(o->getVehicleData().getStationType()) << ","
++                               << "\"station_id\": " << o->getVehicleData().station_id() << ","
++                               << "\"yaw_rate\": " << o->getVehicleData().yaw_rate().value() << ","
++                               << "\"updated\": " << o->getVehicleData().updated() << ","
++                               << "\"speed\": " << o->getVehicleData().speed().value() << ","
++                               << "\"longitude\": " << o->getVehicleData().longitude().value() << ","
++                               << "\"latitude\": " << o->getVehicleData().latitude().value() << ","
++                               << "\"heading\": " << o->getVehicleData().heading().value() << ","
++                               << "\"curvature_confidence\": " << o->getVehicleData().curvature_confidence() << ","
++                               << "\"acceleration\": " << o->getVehicleData().acceleration().value() << ","
++                               << "\"position_x\": " << o->getVehicleData().position().x.value() << ","
++                               << "\"position_y\": " << o->getVehicleData().position().y.value() << ","
++                               << "\"width\": " << o->getWidth().value() << ","
++                               << "\"radius\": " << o->getRadius().value() << ","
++                               << "\"length\": " << o->getLength().value() << ","
++                               << "\"center_x\": " << o->getCentrePoint().x.value() << ","
++                               << "\"center_y\": " << o->getCentrePoint().y.value() << ","
++                               << "\"external_id\": \"" << o->getExternalId() << "\"";
++                    };
++
++                    buffer << "},";
++                }
++            };
++            buffer << "],";
++
++
++            buffer << "\"obstacles\": [";
++            {
++    //            for (auto& obstacle_kv : mObstacles) {
++    //                auto o = obstacle_kv.second;
++    //                // auto outline = o->getOutline();
++    //                buffer << "{";
++    //                {
++    //                    buffer << "\"obstacle_id\": \"" << o->getObstacleId() << "\"";
++    //                };
++    //                buffer << "},";
++    //            }
++            };
++            buffer << "],";
++        };
++        buffer << "},\n";
++        ostream_mutex.unlock();
++    }
+ } // namespace artery
+Index: ansible/artery-workspace/tasks/main.yml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/ansible/artery-workspace/tasks/main.yml b/ansible/artery-workspace/tasks/main.yml
+--- a/ansible/artery-workspace/tasks/main.yml	(revision 7e4d871b88d4e9db0e8b23f6ff45787d8b33c52d)
++++ b/ansible/artery-workspace/tasks/main.yml	(date 1707609065560)
+@@ -18,6 +18,10 @@
+           - libssl-dev
+           - python3-distutils
+           - sumo
++          - asn1c
++          - libpcap-dev
++          - libcurl4-openssl-dev
++          - curl
+   become: yes
+ 
+ - name: clone Artery repository
+@@ -48,7 +52,7 @@
+       state: directory
+ 
+ - name: configure Artery build directory
+-  command: cmake {{ artery_source_dir }}
++  command: cmake -DVANETZA_ASN1_WITH_ASN1C=off {{ artery_source_dir }}
+   args:
+       chdir: "{{ artery_build_dir }}"
+       creates: "{{ artery_build_dir }}/Makefile"
+Index: src/artery/envmod/service/CollectivePerceptionMockService.cc
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/src/artery/envmod/service/CollectivePerceptionMockService.cc b/src/artery/envmod/service/CollectivePerceptionMockService.cc
+--- a/src/artery/envmod/service/CollectivePerceptionMockService.cc	(revision 7e4d871b88d4e9db0e8b23f6ff45787d8b33c52d)
++++ b/src/artery/envmod/service/CollectivePerceptionMockService.cc	(date 1707609092584)
+@@ -13,6 +13,9 @@
+ #include <omnetpp/cmessage.h>
+ #include <omnetpp/cpacket.h>
+ 
++#include <fstream>
++#include <mutex>
++
+ namespace artery
+ {
+ 
+@@ -30,6 +33,32 @@
+ 
+ CollectivePerceptionMockService::~CollectivePerceptionMockService()
+ {
++
++    std::ofstream generateFile;
++    std::ofstream receiveFile;
++    std::ofstream indicateFile;
++
++    generateFile.open ("results/generate.txt", std::ios_base::app);
++    receiveFile.open ("results/receive.txt", std::ios_base::app);
++    indicateFile.open ("results/indicate.txt", std::ios_base::app);
++
++    //    generatedCPMs << "]";
++    //    receivedCPMs << "]";
++
++
++    generateFile << generatedCPMs.rdbuf();
++    generateFile.close();
++
++    receiveFile << receivedCPMs.rdbuf();
++    receiveFile.close();
++
++
++    indicateFile << indicatedCPMs.rdbuf();
++    indicateFile.close();
++
++    //    generatedCPMs.clear();
++    //    receivedCPMs.clear();
++
+     cancelAndDelete(mTrigger);
+ }
+ 
+@@ -67,6 +96,10 @@
+                 fovContainer.sensorId = sensor->getId();
+                 fovContainer.position = sensor->position();
+                 fovContainer.fov = fovSensor->getFieldOfView();
++//                fovContainer.sensorName = fovSensor->getSensorName();
++//                fovContainer.sensorCategory = fovSensor->getSensorCategory();
++//                fovContainer.sensorFullName = fovSensor->getFullName();
++//                fovContainer.sensorShortName = fovSensor->getName();
+                 mFovContainers.emplace_back(std::move(fovContainer));
+                 mSensors.insert(sensor);
+             }
+@@ -79,6 +112,7 @@
+     if (msg == mTrigger) {
+         generatePacket();
+     } else {
++        receivedCPMs << "Received : " <<  msg->getDisplayString() << "\n";
+         ItsG5Service::handleMessage(msg);
+     }
+ }
+@@ -109,10 +143,88 @@
+ void CollectivePerceptionMockService::indicate(const vanetza::btp::DataIndication&, omnetpp::cPacket* packet)
+ {
+     auto cpm = omnetpp::check_and_cast<CollectivePerceptionMockMessage*>(packet);
++    recordPacket(*cpm, indicatedCPMs);
+     emit(cpmReceivedSignal, cpm);
+     delete packet;
+ }
+ 
++
++void CollectivePerceptionMockService::recordPacket(CollectivePerceptionMockMessage& cpm, std::stringstream& buffer)
++{
++    ostream_mutex.lock();
++    using namespace vanetza;
++    buffer << "{";
++    {
++        buffer << "\"step\":" << omnetpp::simTime().dbl() << ","
++               << "\"destination_port\":" << host_cast<PortNumber>(getPortNumber()) << ","
++               << "\"transport_type\":" << static_cast<int>(geonet::TransportType::SHB) << ","
++           << "\"tc_id\":" << mDccProfile << ","
++           << "\"communication_profile\":" << static_cast<int>(geonet::CommunicationProfile::ITS_G5) << ",";
++
++
++    buffer << "\"fov_containers\": [ ";
++        {
++    for (CollectivePerceptionMockMessage::FovContainer fovContainer : cpm.getFovContainers()) {
++        buffer << "{"
++               << "\"angle\":" << fovContainer.fov.angle.value() << ","
++               << "\"range\":" << fovContainer.fov.range.value() << ","
++               << "\"position\":" << static_cast<int>(fovContainer.position) << ","
++               << "\"sensorId\":" << fovContainer.sensorId << "},";
++    }
++        };
++    buffer << "],";
++
++    buffer << "\"last_fov\":" << mFovLast << ",";
++
++    buffer << "\"tracked_objects\": [ ";
++        {
++    for (const auto& objectContainer : cpm.getObjectContainers()) {
++            buffer << "{";
++            {
++        buffer << "\"objectId\":" << objectContainer.objectId << ","
++               << "\"sensorId\":" << objectContainer.sensorId << ","
++               << "\"timeOfMeasurement\":" << objectContainer.timeOfMeasurement << ",";
++
++        EnvironmentModelObject* o = objectContainer.object.lock().get();
++        if (o != NULL) {
++            buffer << "\"object\": { "
++                   << "\"center_x\":" << o->getCentrePoint().x.value() << ","
++                   << "\"center_y\":" << o->getCentrePoint().y.value() << ","
++                   << "\"external_id\":\"" << o->getExternalId() << "\","
++                   << "\"length\":" << o->getLength().value()
++                   << ","
++                   // TODO: o->getOutline()
++                   << "\"radius\":" << o->getRadius().value() << ","
++                   << "\"width\":" << o->getWidth().value() << ","
++                   << "\"vehicle\": {"
++                   << "\"x\":" << o->getVehicleData().position().x.value() << ","
++                   << "\"y\":" << o->getVehicleData().position().y.value() << ","
++                   << "\"acceleration\":" << o->getVehicleData().acceleration().value() << ","
++                   << "\"curvature\":" << o->getVehicleData().curvature().value() << ","
++                   << "\"curvature_confidence\":" << o->getVehicleData().curvature_confidence() << ","
++                   << "\"station_id\":" << o->getVehicleData().station_id() << ","
++                   << "\"station_type\":" << static_cast<int>(o->getVehicleData().getStationType()) << ","
++                   << "\"heading\":" << o->getVehicleData().heading().value() << ","
++                   << "\"latitude\":" << o->getVehicleData().latitude().value() << ","
++                   << "\"longitude\":" << o->getVehicleData().longitude().value() << ","
++                   << "\"speed\":" << o->getVehicleData().speed().value() << ","
++                   << "\"updated\":" << o->getVehicleData().updated().dbl() << ","
++                           << "\"yaw_rate\":" << o->getVehicleData().yaw_rate().value() << "}"
++                   << "}";
++        }
++        buffer << "},";
++    }
++        }
++    buffer << "],";
++        };
++
++    buffer << "\"length\":" << cpm.getByteLength() << ","
++                  << "\"mHostId\":" << mHostId << "},"
++                  << "\n";
++    };
++
++    ostream_mutex.unlock();
++}
+ void CollectivePerceptionMockService::generatePacket()
+ {
+     using namespace vanetza;
+@@ -155,8 +267,33 @@
+     packet->setObjectContainers(std::move(objectContainers));
+     packet->setSourceStation(mHostId);
+ 
++    recordPacket(*packet, generatedCPMs);
+     emit(cpmSentSignal, packet);
+     request(req, packet);
+ }
++CollectivePerceptionMockService::CollectivePerceptionMockService():mGenerateAfterCam(false)
++{
++//    generatedCPMs << "[";
++//    receivedCPMs << "[";
++}
++
+ 
+ } // namespace artery
++//sed  -E  's/\},]/}]/g' generate.txt > generate_edited.json && sed  -i -E 's/,\}/}/g'  generate_edited.json
++
++//sed  -E  's/\},]/}]/g' generate.txt > generate_edited.json && sed  -i -E 's/,\}/}/g'  generate_edited.json
++//sed  -E  's/\},]/}]/g' receive.txt > receive_edited.json && sed  -i -E 's/,\}/}/g'  receive_edited.json
++//sed  -E  's/\},]/}]/g' indicate.txt > indicate_edited.json && sed  -i -E 's/,\}/}/g'  indicate_edited.json
++//sed  -E  's/\},]/}]/g' env.txt > env_edited.json && sed  -i -E 's/,\}/}/g'  env_edited.json
++//attacks: https://github.com/quic/vasp
++//https://github.com/quic/autopen?tab=readme-ov-file
++//https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9920388/
++//https://www.youtube.com/watch?v=xfFjaMn9z8s&themeRefresh=1
++//https://github.com/ibr-cm/a4md
++//https://ieeexplore.ieee.org/document/10136315/authors#authors
++//https://www.diva-portal.org/smash/get/diva2:1440195/FULLTEXT01.pdf
++//https://github.com/topics/v2x?l=c%2B%2B
++//https://groups.google.com/g/omnetpp/c/F5NJKLcOaXI?pli=1
++//https://webthesis.biblio.polito.it/29324/1/tesi.pdf
++//https://dl.acm.org/doi/abs/10.1145/3565287.3617616
++//https://www.google.com/search?q=A4MD&sourceid=chrome&ie=UTF-8#ip=1
+Index: src/artery/envmod/service/CollectivePerceptionMockMessage.h
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/src/artery/envmod/service/CollectivePerceptionMockMessage.h b/src/artery/envmod/service/CollectivePerceptionMockMessage.h
+--- a/src/artery/envmod/service/CollectivePerceptionMockMessage.h	(revision 7e4d871b88d4e9db0e8b23f6ff45787d8b33c52d)
++++ b/src/artery/envmod/service/CollectivePerceptionMockMessage.h	(date 1707609065696)
+@@ -19,6 +19,10 @@
+         int sensorId = 0;
+         SensorPosition position;
+         FieldOfView fov;
++//        std::string sensorName;
++//        std::string sensorCategory;
++//        std::string sensorFullName;
++//        std::string sensorShortName;
+     };
+ 
+     struct ObjectContainer
+Index: src/artery/envmod/service/CollectivePerceptionMockService.h
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/src/artery/envmod/service/CollectivePerceptionMockService.h b/src/artery/envmod/service/CollectivePerceptionMockService.h
+--- a/src/artery/envmod/service/CollectivePerceptionMockService.h	(revision 7e4d871b88d4e9db0e8b23f6ff45787d8b33c52d)
++++ b/src/artery/envmod/service/CollectivePerceptionMockService.h	(date 1707609177356)
+@@ -10,6 +10,10 @@
+ #include "artery/envmod/service/CollectivePerceptionMockMessage.h"
+ #include "artery/application/ItsG5Service.h"
+ #include "artery/networking/PositionProvider.h"
++
++#include <fstream>
++#include <mutex>
++
+ #include <unordered_set>
+ #include <vector>
+ 
+@@ -20,6 +24,7 @@
+ {
+     public:
+         virtual ~CollectivePerceptionMockService();
++        CollectivePerceptionMockService();
+ 
+     protected:
+         int numInitStages() const override;
+@@ -29,7 +34,8 @@
+         void receiveSignal(omnetpp::cComponent*, omnetpp::simsignal_t, omnetpp::cObject*, omnetpp::cObject*) override;
+         void generatePacket();
+         void indicate(const vanetza::btp::DataIndication&, omnetpp::cPacket*) override;
+-
++		void recordPacket(CollectivePerceptionMockMessage& cpm, std::stringstream& buffer);
++    
+     private:
+         int mHostId = 0;
+         const PositionProvider* mPositionProvider = nullptr;
+@@ -46,6 +52,11 @@
+         unsigned mLengthHeader = 0;
+         unsigned mLengthFovContainer = 0;
+         unsigned mLengthObjectContainer = 0;
++        
++        std::stringstream generatedCPMs;
++        std::stringstream receivedCPMs;
++        std::stringstream indicatedCPMs;
++        std::mutex ostream_mutex{};
+ };
+ 
+ } // namespace artery
+Index: scenarios/f2md/services.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/scenarios/f2md/services.xml b/scenarios/f2md/services.xml
+--- a/scenarios/f2md/services.xml	(revision 7e4d871b88d4e9db0e8b23f6ff45787d8b33c52d)
++++ b/scenarios/f2md/services.xml	(date 1707329849558)
+@@ -1,10 +1,13 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <services>
+-    <service type="artery.application.CaService">
++    <service type="artery.application.CaService" name="CA">
+         <listener port="2001"/>
+         <filters operator="and">
+             <type pattern="artery.envmod.Car"/>
+         </filters>
++    </service>
++    <service type="artery.envmod.service.CollectivePerceptionMockService" name="CP">
++        <listener port="3002" />
+     </service>
+     <service type="artery.application.misbehavior.MisbehaviorCaService">
+         <listener port="2001"/>
+@@ -19,5 +22,9 @@
+             <type pattern="artery.application.misbehavior.MisbehaviorCar"/>
+         </filters>
+     </service>
++
++    <service type="artery.envmod.service.EnvmodPrinter">
++        <listener port="3001" />
++    </service>
+ </services>
+ 
+Index: scenarios/f2md/omnetpp.ini
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/scenarios/f2md/omnetpp.ini b/scenarios/f2md/omnetpp.ini
+--- a/scenarios/f2md/omnetpp.ini	(revision 7e4d871b88d4e9db0e8b23f6ff45787d8b33c52d)
++++ b/scenarios/f2md/omnetpp.ini	(date 1707611813586)
+@@ -54,12 +54,12 @@
+ *.traci.mapper.vehicleTypes = xml \
+ ("\
+ <vehicles> \
+-<vehicle type=\"artery.inet.PlainVehicle\" rate=\"${plainRate}\" /> \
+ <vehicle type=\"artery.envmod.Car\" rate=\"${benignRate}\" /> \
+ <vehicle type=\"artery.application.misbehavior.MisbehaviorCar\" rate=\"${maliciousRate}\" /> \
+ </vehicles> \
+ ")
+-
++#
++#<vehicle type=\"artery.inet.PlainVehicle\" rate=\"${plainRate}\" /> \
+ 
+ image-path = "f2md-networks/images"
+ 
+@@ -88,7 +88,8 @@
+ *.traci.nodes.vehiclePolicy[1].rng-0 = 6
+ # for generating the number of backoff slots used in contention
+ *.node[*].wlan[*].mac.hcf.edca.edcaf[*].contention.rng-0 = 7
+-
++#<vehicle type=\"artery.inet.PlainVehicle\" rate=\"${plainRate}\" /> \
++#
+ 
+ *.annotations.draw = true
+ 
+@@ -124,6 +125,27 @@
+ *.environmentModel.nodeMobilityModule = ".mobility"
+ *.node[*].environmentModel.sensors = xmldoc("sensors.xml")
+ 
++*.node[*].environmentModel.*.drawSensorCone = true
++*.node[*].environmentModel.*.drawLinesOfSight = true
++*.node[*].environmentModel.*.drawDetectedObjects = true
++*.node[*].environmentModel.*.drawBlockingObstacles = true
++
++*.node[*].environmentModel.FrontLongRangeRadar.fovRange = 150m
++*.node[*].environmentModel.FrontLongRangeRadar.fovAngle = 10
++
++*.node[*].environmentModel.FrontShortRangeRadar.fovRange = 65m
++*.node[*].environmentModel.FrontShortRangeRadar.fovAngle = 80
++*.node[*].environmentModel.FrontShortRangeRadar.numSegments = 4
++
++*.node[*].environmentModel.RearLongRangeRadar.fovRange = 150m
++*.node[*].environmentModel.RearLongRangeRadar.fovAngle = 10
++
++*.node[*].environmentModel.RearShortRangeRadar.fovRange = 65m
++*.node[*].environmentModel.RearShortRangeRadar.fovAngle = 80
++*.node[*].environmentModel.RearShortRangeRadar.numSegments = 4
++
++*.node[*].environmentModel.SeeThrough.fovRange = 50m
++
+ *.node[*].middleware.updateInterval = 0.1s
+ *.node[*].middleware.datetime = "2013-06-01 12:35:00"
+ *.node[*].middleware.services = xmldoc("services.xml")
+@@ -200,3 +222,172 @@
+ extends = f2md-LuSTNanoScenario
+ 
+ *.traci.launcher.sumocfg = "f2md-networks/UlmScenario/UlmScenario.sumo.cfg"
++
++
++
++
++
++[Config veins]
++network = artery.veins.World
++
++*.playgroundSizeX = 4000m
++*.playgroundSizeY = 4000m
++*.playgroundSizeZ = 50m
++
++*.connectionManager.maxInterfDist = 1500m
++*.connectionManager.sendDirect = true
++*.connectionManager.coreDebug = false
++
++*.withObstacles = true
++*.obstacles.obstacles = xmldoc("config.xml", "//AnalogueModel[@type='SimpleObstacleShadowing']/obstacles")
++
++*.node[*].nic.mac1609_4.txPower = 126mW
++*.node[*].nic.phy80211p.decider = xmldoc("config.xml")
++*.node[*].nic.phy80211p.analogueModels = xmldoc("config.xml")
++
++*.node[*].applType = "artery.veins.ApplicationLayer"
++*.node[*].appl.middleware.updateInterval = 0.1s
++*.node[*].appl.middleware.datetime = "2013-06-01 12:35:00"
++*.node[*].appl.middleware.services = xmldoc("services.xml")
++
++
++
++[Config inet]
++network = artery.inet.World
++
++*.node[*].wlan[*].typename = "VanetNic"
++*.node[*].wlan[*].radio.channelNumber = 180
++*.node[*].wlan[*].radio.carrierFrequency = 5.9 GHz
++*.node[*].wlan[*].radio.transmitter.power = 200 mW
++
++*.node[*].middleware.updateInterval = 0.1s
++*.node[*].middleware.datetime = "2013-06-01 12:35:00"
++*.node[*].middleware.services = xmldoc("services.xml")
++
++
++[Config inet_mco]
++extends = inet
++*.node[*].numRadios = 2
++*.node[*].wlan[1].radio.channelNumber = 176
++*.node[*].middleware.services = xmldoc("services-mco.xml")
++*.node[*].middleware.mcoPolicy = xml("<mco default=\"CCH\"><application id=\"16480\" channel=\"176\" /></mco>")
++
++
++[Config inet_security]
++extends = inet
++*.node[*].vanetza[*].security.typename = "SecurityEntity"
++
++
++[Config inet_multiple_vehicle_types]
++extends = inet
++# see above for configuration of mapper's random number generator (rng)
++seed-1-mt = ${seed=0, 23, 42, 1337, 0815, 4711}
++*.traci.mapper.typename = "traci.MultiTypeModuleMapper"
++*.traci.mapper.vehicleTypes = xmldoc("vehicles.xml")
++
++
++[Config inet_nakagami]
++extends = inet
++*.radioMedium.pathLossType = "VanetNakagamiFading"
++
++
++[Config envmod]
++extends = inet
++network = artery.envmod.World
++**.identityRegistryModule = "idRegistry"
++*.traci.mapper.vehicleType = "artery.envmod.Car"
++*.environmentModel.drawObstacles = true
++*.environmentModel.drawVehicles = true
++*.environmentModel.preselectionMethod = ${preseletion=1,2,3}
++*.environmentModel.obstacleTypes = "building shop"
++*.environmentModel.traciModule = "traci"
++*.environmentModel.nodeMobilityModule = ".mobility"
++*.node[*].middleware.services = xmldoc("services-envmod.xml")
++*.node[*].environmentModel.sensors = xmldoc("sensors.xml")
++*.node[*].environmentModel.*.drawSensorCone = true
++*.node[*].environmentModel.*.drawLinesOfSight = true
++*.node[*].environmentModel.*.drawDetectedObjects = true
++*.node[*].environmentModel.*.drawBlockingObstacles = true
++
++*.node[*].environmentModel.FrontLongRangeRadar.fovRange = 150m
++*.node[*].environmentModel.FrontLongRangeRadar.fovAngle = 10
++
++*.node[*].environmentModel.FrontShortRangeRadar.fovRange = 65m
++*.node[*].environmentModel.FrontShortRangeRadar.fovAngle = 80
++*.node[*].environmentModel.FrontShortRangeRadar.numSegments = 4
++
++*.node[*].environmentModel.RearLongRangeRadar.fovRange = 150m
++*.node[*].environmentModel.RearLongRangeRadar.fovAngle = 10
++
++*.node[*].environmentModel.RearShortRangeRadar.fovRange = 65m
++*.node[*].environmentModel.RearShortRangeRadar.fovAngle = 80
++*.node[*].environmentModel.RearShortRangeRadar.numSegments = 4
++
++*.node[*].environmentModel.SeeThrough.fovRange = 50m
++
++
++[Config inet_rsu]
++extends = inet
++*.numRoadSideUnits = 2
++
++*.rsu[*].middleware.datetime = "2013-06-01 12:35:00"
++*.rsu[*].middleware.services = xmldoc("services-rsu.xml")
++*.rsu[0].**.protectedCommunicationZones = xml("<zones><zone latitude=\"49.576070\" longitude=\"11.015889\" /></zones>")
++
++*.rsu[*].mobility.initialZ = 10m
++*.rsu[0].mobility.initialX = 1273.5m
++*.rsu[0].mobility.initialY = 1338.0m
++*.rsu[1].mobility.initialX = 2000m
++*.rsu[1].mobility.initialY = 1000m
++
++
++[Config veins_rsu]
++extends = veins
++*.numRoadSideUnits = 2
++
++*.rsu[*].appl.middleware.updateInterval = 0.1s
++*.rsu[*].appl.middleware.datetime = "2013-06-01 12:35:00"
++*.rsu[*].appl.middleware.services = xmldoc("services-rsu.xml")
++*.rsu[0].**.protectedCommunicationZones = xml("<zones><zone latitude=\"49.576070\" longitude=\"11.015889\" /></zones>")
++
++*.rsu[*].nic.mac1609_4.txPower = 126mW
++*.rsu[*].nic.phy80211p.decider = xmldoc("config.xml")
++*.rsu[*].nic.phy80211p.analogueModels = xmldoc("config.xml")
++
++*.rsu[*].mobility.z = 10
++*.rsu[0].mobility.x = 1273.5
++*.rsu[0].mobility.y = 1338.0
++*.rsu[1].mobility.x = 2000
++*.rsu[1].mobility.y = 1000
++
++
++[Config inet_antenna_offset]
++extends = inet
++
++*.node[*].withAntennaMobility = true
++*.node[*].antennaMobility.offsetX = -2.5 m
++
++
++[Config delayed_vehicle_insertion]
++description = "insert a bulk of vehicles with individual delays"
++extends = inet
++*.traci.core.startTime = 120 s
++*.traci.nodes.typename = "InsertionDelayNodeManager"
++
++
++[Config region_of_interest_vehicle_insertion]
++description = "Only manage vehicles within defined Regions of Interest (ROI)"
++extends = inet
++*.traci.nodes.typename = "RegionOfInterestNodeManager"
++*.traci.nodes.regionsOfInterest = xmldoc("regions_of_interest.xml")
++
++
++[Config roi_and_delay_vehicle_insertion]
++description = "insert vehicles within Regions of Interest (ROI) after individual delays"
++extends = inet
++*.traci.core.startTime = 150 s
++*.traci.nodes.typename = "ExtensibleNodeManager"
++*.traci.nodes.numVehiclePolicies = 2
++*.traci.nodes.vehiclePolicy[0].typename = "RegionOfInterestVehiclePolicy"
++*.traci.nodes.vehiclePolicy[0].regionsOfInterest = xmldoc("regions_of_interest.xml")
++*.traci.nodes.vehiclePolicy[1].typename = "InsertionDelayVehiclePolicy"
+Index: src/artery/application/misbehavior/MisbehaviorCpmService.cc
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/src/artery/application/misbehavior/MisbehaviorCpmService.cc b/src/artery/application/misbehavior/MisbehaviorCpmService.cc
+new file mode 100644
+--- /dev/null	(date 1707609065652)
++++ b/src/artery/application/misbehavior/MisbehaviorCpmService.cc	(date 1707609065652)
+@@ -0,0 +1,835 @@
++/*
++* Artery V2X Simulation Framework
++* Copyright 2014-2019 Raphael Riebl et al.
++* Licensed under GPLv2, see COPYING file for detailed license and warranty terms.
++*/
++
++#include "artery/application/misbehavior/MisbehaviorCpmService.h"
++#include "artery/application/misbehavior/util/HelperFunctions.h"
++#include "artery/application/misbehavior/report/Report.h"
++#include "artery/application/misbehavior/report/MisbehaviorReportObject.h"
++#include "artery/application/CpmObject.h"
++#include "artery/application/Asn1PacketVisitor.h"
++#include "artery/application/MultiChannelPolicy.h"
++#include <artery/traci/Cast.h>
++#include <boost/units/systems/si/prefixes.hpp>
++
++using namespace omnetpp;
++namespace artery {
++
++    namespace {
++        auto microdegree = vanetza::units::degree * boost::units::si::micro;
++        auto decidegree = vanetza::units::degree * boost::units::si::deci;
++        auto degree_per_second = vanetza::units::degree / vanetza::units::si::second;
++        auto centimeter_per_second = vanetza::units::si::meter_per_second * boost::units::si::centi;
++
++        static const simsignal_t scSignalCpmReceived = cComponent::registerSignal("CpmReceived");
++        static const simsignal_t scSignalMaMisbehaviorAnnouncement = cComponent::registerSignal(
++                "misbehaviorAuthority.MisbehaviorAnnouncement");
++        static const simsignal_t scSignalMisbehaviorAuthorityNewReport = cComponent::registerSignal(
++                "newMisbehaviorReport");
++    }
++
++    GlobalEnvironmentModel *MisbehaviorCpmService::mGlobalEnvironmentModel;
++    bool MisbehaviorCpmService::staticInitializationComplete = false;
++
++
++    Define_Module(MisbehaviorCpmService)
++
++    template<typename T, typename U>
++    long MisbehaviorCpmService::round(const boost::units::quantity<T> &q, const U &u) {
++        boost::units::quantity<U> v{q};
++        return std::round(v.value());
++    }
++
++    MisbehaviorCpmService::~MisbehaviorCpmService() {
++        while (!activePoIs.empty()) {
++            mTraciAPI->poi.remove(activePoIs.front());
++            activePoIs.pop_front();
++        }
++        disruptiveMessageQueue.clear();
++        if (receivedMessages.empty()) {
++            for (auto &sender: receivedMessages) {
++                while (!sender.second.empty()) {
++                    sender.second.pop_front();
++                }
++                receivedMessages.erase(sender.first);
++            }
++        }
++    }
++
++    void MisbehaviorCpmService::initialize() {
++        BaseCpmService::initialize();
++
++        mLocalEnvironmentModel = getFacilities().get_mutable_ptr<LocalEnvironmentModel>();
++
++        if (!staticInitializationComplete) {
++            staticInitializationComplete = true;
++            mGlobalEnvironmentModel = mLocalEnvironmentModel->getGlobalEnvMod();
++            initializeStaticParameters();
++        }
++
++
++        //Constant Position Attack
++        AttackConstantPositionLatitudeMicrodegrees =
++                (long) (uniform(F2MDParameters::attackParameters.AttackConstantPositionMinLatitude,
++                                F2MDParameters::attackParameters.AttackConstantPositionMaxLatitude) * 1000000);
++        AttackConstantPositionLongitudeMicrodegrees =
++                (long) (uniform(F2MDParameters::attackParameters.AttackConstantPositionMinLongitude,
++                                F2MDParameters::attackParameters.AttackConstantPositionMaxLongitude) * 1000000);
++
++        //Constant Position Offset Attack
++        AttackConstantPositionOffsetLatitudeMicrodegrees = (long) (uniform(
++                -F2MDParameters::attackParameters.AttackConstantPositionOffsetMaxLatitudeOffset,
++                F2MDParameters::attackParameters.AttackConstantPositionOffsetMaxLatitudeOffset) * 1000000);
++        AttackConstantPositionOffsetLongitudeMicrodegrees = (long) (uniform(
++                -F2MDParameters::attackParameters.AttackConstantPositionOffsetMaxLongitudeOffset,
++                F2MDParameters::attackParameters.AttackConstantPositionOffsetMaxLongitudeOffset) * 1000000);
++
++        // Constant Speed Attack
++        AttackConstantSpeedValue = buildSpeedValue(
++                uniform(F2MDParameters::attackParameters.AttackConstantSpeedMin,
++                        F2MDParameters::attackParameters.AttackConstantSpeedMax) *
++                boost::units::si::meter_per_second);
++
++        //Constant Speed Offset Attack
++        attackConstantSpeedOffsetValue =
++                ((long) uniform(-F2MDParameters::attackParameters.AttackConstantSpeedOffsetMax,
++                                F2MDParameters::attackParameters.AttackConstantSpeedOffsetMax)) *
++                boost::units::si::meter_per_second;
++
++        // Eventual Stop Attack
++        attackEventualStopHasStopped = false;
++
++        // Data Replay Attack
++        attackDataReplayCurrentStationId = -1;
++
++        // Grid Sybil Attack
++        attackGridSybilVehicleCount = intuniform(F2MDParameters::attackParameters.AttackGridSybilVehicleCount -
++                                                 F2MDParameters::attackParameters.AttackGridSybilVehicleCountVariation,
++                                                 F2MDParameters::attackParameters.AttackGridSybilVehicleCount +
++                                                 F2MDParameters::attackParameters.AttackGridSybilVehicleCountVariation);
++        if (attackGridSybilVehicleCount < 1) {
++            attackGridSybilVehicleCount = 1;
++        }
++
++        attackGridSybilCurrentVehicleIndex = 0;
++        attackGridSybilActualDistanceX = uniform(F2MDParameters::attackParameters.AttackGridSybilDistanceX -
++                                                 F2MDParameters::attackParameters.AttackGridSybilDistanceVariation,
++                                                 F2MDParameters::attackParameters.AttackGridSybilDistanceX +
++                                                 F2MDParameters::attackParameters.AttackGridSybilDistanceVariation);
++        attackGridSybilActualDistanceY = uniform(F2MDParameters::attackParameters.AttackGridSybilDistanceY -
++                                                 F2MDParameters::attackParameters.AttackGridSybilDistanceVariation,
++                                                 F2MDParameters::attackParameters.AttackGridSybilDistanceY +
++                                                 F2MDParameters::attackParameters.AttackGridSybilDistanceVariation);
++
++
++        mAttackType = attackTypes::AttackTypes((int) par("StaticAttackType"));
++        par("AttackType").setStringValue(attackTypes::AttackNames[mAttackType]);
++
++        switch(mAttackType){
++            case attackTypes::Benign:
++                mMisbehaviorType = misbehaviorTypes::Benign;
++                break;
++            case attackTypes::FakeReport:
++                mMisbehaviorType = misbehaviorTypes::GlobalAttacker;
++                break;
++            default:
++                mMisbehaviorType = misbehaviorTypes::LocalAttacker;
++        }
++
++        mTraciAPI->vehicle.setColor(mVehicleController->getVehicleId(), libsumo::TraCIColor(255, 0, 0, 255));
++
++
++        if (mAttackType == attackTypes::DoS || mAttackType == attackTypes::DoSRandom ||
++            mAttackType == attackTypes::DoSDisruptive || mAttackType == attackTypes::GridSybil ||
++            mAttackType == attackTypes::DataReplaySybil || mAttackType == attackTypes::DoSRandomSybil ||
++            mAttackType == attackTypes::DoSDisruptiveSybil) {
++            mGenCpmMin = {F2MDParameters::attackParameters.AttackDoSInterval, SIMTIME_MS};
++            mDccRestriction = !F2MDParameters::attackParameters.AttackDoSIgnoreDCC;
++            mFixedRate = true;
++        }
++
++        if (mAttackType != attackTypes::Benign) {
++            std::vector<StationID_t> stationIds;
++            stationIds.emplace_back(mStationId);
++            if (mAttackType == attackTypes::GridSybil || mAttackType == attackTypes::DoSRandomSybil ||
++                mAttackType == attackTypes::DoSDisruptiveSybil) {
++                for (int i = 0; i < attackGridSybilVehicleCount; i++) {
++                    StationType_t stationId = Identity::randomStationId(getRNG(0));
++                    mPseudonyms.emplace_back(stationId);
++                    stationIds.emplace_back(stationId);
++                }
++            }
++            std::vector<StationID_t> *ptr = &stationIds;
++            auto *cObj = reinterpret_cast<cObject *>(ptr);
++            emit(scSignalMaMisbehaviorAnnouncement, cObj);
++        }
++    }
++
++    void MisbehaviorCpmService::initializeStaticParameters() {
++        // CPM Location Visualizer (PoI)
++        F2MDParameters::miscParameters.CpmmLocationVisualizer = par("CpmmLocationVisualizer");
++        F2MDParameters::miscParameters.CpmmLocationVisualizerMaxLength = par("CpmmLocationVisualizerMaxLength");
++
++//        F2MDParameters::attackParameters.StaticAttackType = par("StaticAttackType");
++
++        // Constant Position Attack
++        F2MDParameters::attackParameters.AttackConstantPositionMinLatitude = par("AttackConstantPositionMinLatitude");
++        F2MDParameters::attackParameters.AttackConstantPositionMaxLatitude = par("AttackConstantPositionMaxLatitude");
++        F2MDParameters::attackParameters.AttackConstantPositionMinLongitude = par("AttackConstantPositionMinLongitude");
++        F2MDParameters::attackParameters.AttackConstantPositionMaxLongitude = par("AttackConstantPositionMaxLongitude");
++
++        // Constant Position Offset Attack
++        F2MDParameters::attackParameters.AttackConstantPositionOffsetMaxLatitudeOffset = par(
++                "AttackConstantPositionOffsetMaxLatitudeOffset");
++        F2MDParameters::attackParameters.AttackConstantPositionOffsetMaxLongitudeOffset = par(
++                "AttackConstantPositionOffsetMaxLongitudeOffset");
++
++        // Random Position Attack
++        F2MDParameters::attackParameters.AttackRandomPositionMinLatitude = par("AttackRandomPositionMinLatitude");
++        F2MDParameters::attackParameters.AttackRandomPositionMaxLatitude = par("AttackRandomPositionMaxLatitude");
++        F2MDParameters::attackParameters.AttackRandomPositionMinLongitude = par("AttackRandomPositionMinLongitude");
++        F2MDParameters::attackParameters.AttackRandomPositionMaxLongitude = par("AttackRandomPositionMaxLongitude");
++
++        // Random Position Offset Attack
++        F2MDParameters::attackParameters.AttackRandomPositionOffsetMaxLatitudeOffset = par(
++                "AttackRandomPositionOffsetMaxLatitudeOffset");
++        F2MDParameters::attackParameters.AttackRandomPositionOffsetMaxLongitudeOffset = par(
++                "AttackRandomPositionOffsetMaxLongitudeOffset");
++
++        // Constant Speed Attack
++        // Meters per Second
++        F2MDParameters::attackParameters.AttackConstantSpeedMin = par("AttackConstantSpeedMin");
++        F2MDParameters::attackParameters.AttackConstantSpeedMax = par("AttackConstantSpeedMax");
++
++        // Constant Speed Offset Attack
++        F2MDParameters::attackParameters.AttackConstantSpeedOffsetMax = par("AttackConstantSpeedOffsetMax");
++
++        // Random Speed Attack
++        // Meters per Second
++        F2MDParameters::attackParameters.AttackRandomSpeedMin = par("AttackRandomSpeedMin");
++        F2MDParameters::attackParameters.AttackRandomSpeedMax = par("AttackRandomSpeedMax");
++
++        // Random Speed Offset Attack
++        F2MDParameters::attackParameters.AttackRandomSpeedOffsetMax = par("AttackRandomSpeedOffsetMax");
++
++        // Eventual Stop Attack
++        F2MDParameters::attackParameters.AttackEventualStopProbabilityThreshold = par(
++                "AttackEventualStopProbabilityThreshold");
++
++        // Disruptive Attack
++        F2MDParameters::attackParameters.AttackDisruptiveBufferSize = par("AttackDisruptiveBufferSize");
++        F2MDParameters::attackParameters.AttackDisruptiveMinimumReceived = par("AttackDisruptiveMinimumReceived");
++
++        // Denial of Service Attack
++        F2MDParameters::attackParameters.AttackDoSInterval = par("AttackDoSInterval");
++        F2MDParameters::attackParameters.AttackDoSIgnoreDCC = par("AttackDoSIgnoreDCC");
++
++        // Stale Messages Attack
++        F2MDParameters::attackParameters.AttackStaleDelayCount = par("AttackStaleDelayCount");
++
++        // Grid Sybil Attack
++        F2MDParameters::attackParameters.AttackGridSybilVehicleCount = par("AttackGridSybilVehicleCount");
++        F2MDParameters::attackParameters.AttackGridSybilVehicleCountVariation = par(
++                "AttackGridSybilVehicleCountVariation");
++        F2MDParameters::attackParameters.AttackGridSybilSelfSybil = par("AttackGridSybilSelfSybil");
++        F2MDParameters::attackParameters.AttackGridSybilDistanceX = par("AttackGridSybilDistanceX");
++        F2MDParameters::attackParameters.AttackGridSybilDistanceY = par("AttackGridSybilDistanceY");
++        F2MDParameters::attackParameters.AttackGridSybilDistanceVariation = par("AttackGridSybilDistanceVariation");
++        F2MDParameters::attackParameters.AttackGridSybilMaxDistanceFromRoad = par("AttackGridSybilMaxDistanceFromRoad");
++
++        // Fake Report Attack
++        F2MDParameters::attackParameters.AttackFakeReportInterval = par("AttackFakeReportInterval");
++    }
++
++    void MisbehaviorCpmService::trigger() {
++        Enter_Method("trigger");
++        const SimTime &T_now = simTime();
++        if (mAttackType == attackTypes::Disruptive || mAttackType == attackTypes::DataReplay ||
++            mAttackType == attackTypes::DoS || mAttackType == attackTypes::DoSRandom ||
++            mAttackType == attackTypes::DoSDisruptive || mAttackType == attackTypes::GridSybil ||
++            mAttackType == attackTypes::DataReplaySybil || mAttackType == attackTypes::DoSRandomSybil ||
++            mAttackType == attackTypes::DoSDisruptiveSybil || checkTriggeringConditions(T_now)) {
++            sendCpm(T_now);
++        }
++        if (mAttackType == attackTypes::FakeReport &&
++            simTime().inUnit(SimTimeUnit::SIMTIME_MS) - attackFakeReportLastReportTime >
++            uint64_t(F2MDParameters::attackParameters.AttackFakeReportInterval * 1000)) {
++            attackFakeReportLastReportTime = simTime().inUnit(SimTimeUnit::SIMTIME_MS);
++            createFakeReport();
++        }
++    }
++
++    void
++    MisbehaviorCpmService::indicate(const vanetza::btp::DataIndication &ind, std::unique_ptr<vanetza::UpPacket> packet) {
++        Enter_Method("indicate");
++
++        Asn1PacketVisitor<vanetza::asn1::CPM> visitor;
++        const vanetza::asn1::CPM *cpm = boost::apply_visitor(visitor, *packet);
++        if (cpm && cpm->validate()) {
++            CpmObject obj = visitor.shared_wrapper;
++            emit(scSignalCpmReceived, &obj);
++            mLocalDynamicMap->updateAwareness(obj);
++            switch (mAttackType) {
++                case attackTypes::Disruptive: {
++                    disruptiveMessageQueue.emplace_back(*cpm);
++                    if (disruptiveMessageQueue.size() > F2MDParameters::attackParameters.AttackDisruptiveBufferSize) {
++                        disruptiveMessageQueue.pop_front();
++                    }
++                    break;
++                }
++                case attackTypes::DataReplay:
++                case attackTypes::DoSDisruptive:
++                case attackTypes::GridSybil:
++                case attackTypes::FakeReport: {
++                    receivedMessages[(*cpm)->header.stationID].push_back(*cpm);
++                    if (receivedMessages[(*cpm)->header.stationID].size() > 20) {
++                        receivedMessages[(*cpm)->header.stationID].pop_front();
++                    }
++                    break;
++                }
++                default:
++                    break;
++            }
++        }
++    }
++
++    void MisbehaviorCpmService::sendCPM(const SimTime &T_now) {
++        uint16_t genDeltaTimeMod = countTaiMilliseconds(mTimer->getTimeFor(mVehicleDataProvider->updated()));
++        vanetza::asn1::CPM cpm;
++        switch (mMisbehaviorType) {
++            case misbehaviorTypes::Benign:
++                cpm = createCooperativeAwarenessMessage(genDeltaTimeMod);
++                break;
++            case misbehaviorTypes::LocalAttacker: {
++                cpm = createAttackCPM(genDeltaTimeMod);
++                break;
++            }
++            case misbehaviorTypes::GlobalAttacker:
++                cpm = createAttackCPM(genDeltaTimeMod);
++                break;
++            default:
++                cpm = createCooperativeAwarenessMessage(genDeltaTimeMod);
++        }
++        if (cpm->header.messageID != 2) {
++            return;
++        }
++        if (F2MDParameters::miscParameters.CpmLocationVisualizer) {
++            visualizeCpmPosition(cpm);
++        }
++        finalizeAndSendCpm(cpm, T_now);
++    }
++
++    vanetza::asn1::CPM MisbehaviorCpmService::createAttackCPM(uint16_t genDeltaTime) {
++        vanetza::asn1::CPM message = createCooperativeAwarenessMessage(genDeltaTime);
++
++        switch (mAttackType) {
++            case attackTypes::Benign:
++                break;
++            case attackTypes::ConstPos: {
++                message->cpm.cpmParameters.basicContainer.referencePosition.latitude =
++                        AttackConstantPositionLatitudeMicrodegrees * Latitude_oneMicrodegreeNorth;
++                message->cpm.cpmParameters.basicContainer.referencePosition.longitude =
++                        AttackConstantPositionLongitudeMicrodegrees * Longitude_oneMicrodegreeEast;
++                break;
++            }
++            case attackTypes::ConstPosOffset: {
++                message->cpm.cpmParameters.basicContainer.referencePosition.latitude =
++                        (round(mVehicleDataProvider->latitude(), microdegree) +
++                         AttackConstantPositionOffsetLatitudeMicrodegrees) *
++                        Latitude_oneMicrodegreeNorth;
++                message->cpm.cpmParameters.basicContainer.referencePosition.longitude =
++                        (round(mVehicleDataProvider->longitude(), microdegree) +
++                         AttackConstantPositionOffsetLongitudeMicrodegrees) *
++                        Longitude_oneMicrodegreeEast;
++                break;
++            }
++            case attackTypes::RandomPos: {
++                long attackLatitude =
++                        (long) (uniform(-F2MDParameters::attackParameters.AttackRandomPositionMinLatitude,
++                                        F2MDParameters::attackParameters.AttackRandomPositionMaxLatitude) * 1000000);
++                long attackLongitude =
++                        (long) (uniform(-F2MDParameters::attackParameters.AttackRandomPositionMinLongitude,
++                                        F2MDParameters::attackParameters.AttackRandomPositionMaxLongitude) * 1000000);
++                message->cpm.cpmParameters.basicContainer.referencePosition.latitude =
++                        attackLatitude * Latitude_oneMicrodegreeNorth;
++                message->cpm.cpmParameters.basicContainer.referencePosition.longitude =
++                        attackLongitude * Longitude_oneMicrodegreeEast;
++                break;
++            }
++            case attackTypes::RandomPosOffset: {
++                long attackLatitudeOffset = (long) (
++                        uniform(-F2MDParameters::attackParameters.AttackRandomPositionOffsetMaxLatitudeOffset,
++                                F2MDParameters::attackParameters.AttackRandomPositionOffsetMaxLatitudeOffset) *
++                        1000000);
++                long attackLongitudeOffset = (long) (
++                        uniform(-F2MDParameters::attackParameters.AttackRandomPositionOffsetMaxLongitudeOffset,
++                                F2MDParameters::attackParameters.AttackRandomPositionOffsetMaxLongitudeOffset) *
++                        1000000);
++                message->cpm.cpmParameters.basicContainer.referencePosition.latitude =
++                        (round(mVehicleDataProvider->latitude(), microdegree) + attackLatitudeOffset) *
++                        Latitude_oneMicrodegreeNorth;
++                message->cpm.cpmParameters.basicContainer.referencePosition.longitude =
++                        (round(mVehicleDataProvider->longitude(), microdegree) + attackLongitudeOffset) *
++                        Longitude_oneMicrodegreeEast;
++                break;
++            }
++            case attackTypes::ConstSpeed: {
++                message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedValue = AttackConstantSpeedValue;
++                break;
++            }
++            case attackTypes::ConstSpeedOffset: {
++                vanetza::units::Velocity speed;
++                if (mVehicleDataProvider->speed() + attackConstantSpeedOffsetValue <
++                    0 * boost::units::si::meter_per_second) {
++                    speed = 0 * boost::units::si::meter_per_second;
++                } else {
++                    speed = mVehicleDataProvider->speed() + attackConstantSpeedOffsetValue;
++                }
++                message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedValue =
++                        buildSpeedValue(speed);
++                break;
++            }
++            case attackTypes::RandomSpeed: {
++                double randomSpeed = uniform(F2MDParameters::attackParameters.AttackRandomSpeedMin,
++                                             F2MDParameters::attackParameters.AttackRandomSpeedMax);
++                message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedValue = buildSpeedValue(
++                        randomSpeed * boost::units::si::meter_per_second);
++                break;
++            }
++            case attackTypes::RandomSpeedOffset: {
++                double speed = std::min(0.0, uniform(-F2MDParameters::attackParameters.AttackRandomSpeedOffsetMax,
++                                                     F2MDParameters::attackParameters.AttackRandomSpeedOffsetMax));
++                message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedValue = buildSpeedValue(
++                        mVehicleDataProvider->speed() +
++                        (speed * boost::units::si::meter_per_second));
++                break;
++            }
++            case attackTypes::EventualStop: {
++                if (attackEventualStopHasStopped) {
++                    message->cpm.cpmParameters.basicContainer.referencePosition = attackEventualStopPosition;
++                    message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedValue = 0;
++                    message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.longitudinalAcceleration.longitudinalAccelerationValue = 0;
++                } else {
++                    if (F2MDParameters::attackParameters.AttackEventualStopProbabilityThreshold > uniform(0, 1)) {
++                        attackEventualStopHasStopped = true;
++                        attackEventualStopPosition = message->cpm.cpmParameters.basicContainer.referencePosition;
++                        message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedValue = 0;
++                        message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.longitudinalAcceleration.longitudinalAccelerationValue = 0;
++                    } else {
++                    }
++                }
++                break;
++            }
++            case attackTypes::Disruptive: {
++                if (disruptiveMessageQueue.size() >= F2MDParameters::attackParameters.AttackDisruptiveMinimumReceived) {
++                    int index = (int) uniform(0, (double) disruptiveMessageQueue.size());
++                    auto it = disruptiveMessageQueue.begin();
++                    std::advance(it, index);
++                    message = *it;
++                    disruptiveMessageQueue.erase(it);
++                    message->cpm.generationDeltaTime = (uint16_t) countTaiMilliseconds(
++                            mTimer->getTimeFor(mVehicleDataProvider->updated()));
++                    message->header.stationID = mVehicleDataProvider->getStationId();
++                } else {
++                    message = vanetza::asn1::CPM();
++                }
++                break;
++            }
++            case attackTypes::DataReplay: {
++                message = getNextReplayCpm();
++                if (message->header.messageID != 2) {
++                    break;
++                } else {
++                    message->cpm.generationDeltaTime = (uint16_t) countTaiMilliseconds(
++                            mTimer->getTimeFor(mVehicleDataProvider->updated()));
++                    message->header.stationID = mVehicleDataProvider->getStationId();
++                }
++                break;
++            }
++            case attackTypes::StaleMessages: {
++                staleMessageQueue.push(message);
++                if (staleMessageQueue.size() >= F2MDParameters::attackParameters.AttackStaleDelayCount) {
++                    message = staleMessageQueue.front();
++                    staleMessageQueue.pop();
++                    message->cpm.generationDeltaTime = (uint16_t) countTaiMilliseconds(
++                            mTimer->getTimeFor(mVehicleDataProvider->updated()));
++                } else {
++                    message = vanetza::asn1::CPM();
++                }
++                break;
++            }
++            case attackTypes::DoS: {
++                message->cpm.generationDeltaTime = (uint16_t) countTaiMilliseconds(mTimer->getTimeFor(simTime()));
++                break;
++            }
++            case attackTypes::DoSRandom: {
++                message->cpm.generationDeltaTime = (uint16_t) countTaiMilliseconds(mTimer->getTimeFor(simTime()));
++                long attackLatitude =
++                        (long) (uniform(-F2MDParameters::attackParameters.AttackRandomPositionMinLatitude,
++                                        F2MDParameters::attackParameters.AttackRandomPositionMaxLatitude) * 1000000);
++                long attackLongitude =
++                        (long) (uniform(-F2MDParameters::attackParameters.AttackRandomPositionMinLongitude,
++                                        F2MDParameters::attackParameters.AttackRandomPositionMaxLongitude) * 1000000);
++                message->cpm.cpmParameters.basicContainer.referencePosition.latitude =
++                        attackLatitude * Latitude_oneMicrodegreeNorth;
++                message->cpm.cpmParameters.basicContainer.referencePosition.longitude =
++                        attackLongitude * Longitude_oneMicrodegreeEast;
++                double randomSpeed = uniform(F2MDParameters::attackParameters.AttackRandomSpeedMin,
++                                             F2MDParameters::attackParameters.AttackRandomSpeedMax);
++                message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedValue = buildSpeedValue(
++                        randomSpeed * boost::units::si::meter_per_second);
++                break;
++            }
++            case attackTypes::DoSDisruptive: {
++                if (!receivedMessages.empty()) {
++                    auto it = receivedMessages.begin();
++                    int index = (int) uniform(0, (double) receivedMessages.size());
++                    std::advance(it, index);
++                    if (!it->second.empty()) {
++                        message = it->second.front();
++                        it->second.pop_front();
++                        if (it->second.empty()) {
++                            receivedMessages.erase(it->first);
++                        }
++                        message->cpm.generationDeltaTime = (uint16_t) countTaiMilliseconds(
++                                mTimer->getTimeFor(mVehicleDataProvider->updated()));
++                        message->header.stationID = mVehicleDataProvider->getStationId();
++                    } else {
++                        receivedMessages.erase(it->first);
++                        message = vanetza::asn1::CPM();
++                    }
++                } else {
++                    message = vanetza::asn1::CPM();
++                }
++                break;
++            }
++            case attackTypes::GridSybil: {
++                int offsetIndex;
++                if (F2MDParameters::attackParameters.AttackGridSybilSelfSybil) {
++                    offsetIndex = attackGridSybilCurrentVehicleIndex;
++                } else {
++                    message = getNextReplayCpm();
++                    if (message->header.messageID != 2) {
++                        message = vanetza::asn1::CPM();
++                        break;
++                    } else {
++                        offsetIndex = attackGridSybilCurrentVehicleIndex + 1;
++                    }
++                }
++                BasicVehicleContainerHighFrequency &hfc =
++                        message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency;
++                double width = hfc.vehicleWidth == VehicleWidth_unavailable ?
++                               mVehicleController->getLength().value() :
++                               (double) hfc.vehicleWidth / 10;
++                double length = hfc.vehicleLength.vehicleLengthValue == VehicleLengthValue_unavailable ?
++                                mVehicleController->getLength().value() :
++                                (double) hfc.vehicleLength.vehicleLengthValue / 10;
++                double offsetX = -((double) offsetIndex / 2) *
++                                 (width + attackGridSybilActualDistanceX) +
++                                 uniform(-attackGridSybilActualDistanceX / 10, attackGridSybilActualDistanceX / 10);
++                double offsetY = -((double) (offsetIndex % 2)) *
++                                 (length + attackGridSybilActualDistanceY) +
++                                 uniform(-attackGridSybilActualDistanceY / 10, attackGridSybilActualDistanceY / 10);
++
++                ReferencePosition_t &referencePosition = message->cpm.cpmParameters.basicContainer.referencePosition;
++                Position originalPosition = convertReferencePosition(referencePosition, mSimulationBoundary, mTraciAPI);
++
++                Position relativePosition = Position(offsetX, offsetY);
++                double currentHeadingAngle = (double) hfc.heading.headingValue / 10.0;
++                double newAngle = currentHeadingAngle + calculateHeadingAngle(relativePosition);
++                newAngle = 360 - std::fmod(newAngle, 360);
++
++                double offsetDistance = sqrt(pow(offsetX, 2) + pow(offsetY, 2));
++                double relativeX = offsetDistance * sin(newAngle * PI / 180);
++                double relativeY = offsetDistance * cos(newAngle * PI / 180);
++                Position sybilPosition = Position(originalPosition.x.value() + relativeX,
++                                                  originalPosition.y.value() + relativeY);
++                if (getDistanceToNearestRoad(mGlobalEnvironmentModel, sybilPosition) >
++                    F2MDParameters::attackParameters.AttackGridSybilMaxDistanceFromRoad) {
++                    message = vanetza::asn1::CPM();
++                    break;
++                }
++                setPositionWithJitter(referencePosition, sybilPosition, mSimulationBoundary, mTraciAPI, getRNG(0));
++
++                if (hfc.speed.speedConfidence != SpeedConfidence_unavailable) {
++                    long speedConfidence = hfc.speed.speedConfidence;
++                    hfc.speed.speedValue = intuniform(std::max(0, (int) (hfc.speed.speedValue - speedConfidence)),
++                                                      std::min(16382,
++                                                               (int) (hfc.speed.speedValue + speedConfidence)));
++                }
++                if (hfc.longitudinalAcceleration.longitudinalAccelerationConfidence !=
++                    AccelerationConfidence_unavailable) {
++                    long accelerationConfidence = hfc.longitudinalAcceleration.longitudinalAccelerationConfidence;
++                    hfc.longitudinalAcceleration.longitudinalAccelerationValue =
++                            intuniform(std::max(-160,
++                                                (int) (hfc.longitudinalAcceleration.longitudinalAccelerationValue -
++                                                       accelerationConfidence)),
++                                       std::min(160,
++                                                (int) (hfc.longitudinalAcceleration.longitudinalAccelerationValue +
++                                                       accelerationConfidence)));
++                }
++                if (hfc.heading.headingConfidence != HeadingConfidence_unavailable) {
++                    long headingConfidence = hfc.heading.headingConfidence;
++                    long newHeading = intuniform((int) (hfc.heading.headingValue - headingConfidence),
++                                                 (int) (hfc.heading.headingValue + headingConfidence));
++                    hfc.heading.headingValue = (newHeading + 3600) % 3600;
++                }
++
++                double steeringAngle = std::fmod(attackGridSybilLastHeadingAngle - currentHeadingAngle, 360);
++                steeringAngle = steeringAngle > 180 ? 360 - steeringAngle : steeringAngle;
++                attackGridSybilLastHeadingAngle = currentHeadingAngle;
++                if (steeringAngle > 5 && attackGridSybilCurrentVehicleIndex > 0) {
++                    message = vanetza::asn1::CPM();
++                    break;
++                }
++
++                attackGridSybilCurrentVehicleIndex = ++attackGridSybilCurrentVehicleIndex % attackGridSybilVehicleCount;
++                message->cpm.generationDeltaTime = (uint16_t) countTaiMilliseconds(
++                        mTimer->getCurrentTime());
++                message->header.stationID = mPseudonyms[mPseudonymIndex++];
++                mPseudonymIndex %= attackGridSybilVehicleCount;
++                break;
++            }
++            case attackTypes::DataReplaySybil: {
++                if (attackDataReplayCurrentStationId == -1) {
++                    auto it = receivedMessages.begin();
++                    if (it != receivedMessages.end()) {
++                        uint32_t mostReceivedStationId = -1;
++                        unsigned long maxSize = 0;
++                        for (; it != receivedMessages.end(); ++it) {
++                            if (receivedMessages[it->first].size() > maxSize) {
++                                maxSize = receivedMessages[it->first].size();
++                                mostReceivedStationId = it->first;
++                            }
++                        }
++                        attackDataReplayCurrentStationId = mostReceivedStationId;
++                        message = receivedMessages[attackDataReplayCurrentStationId].front();
++                        receivedMessages[attackDataReplayCurrentStationId].pop_front();
++                        message->cpm.generationDeltaTime = (uint16_t) countTaiMilliseconds(
++                                mTimer->getTimeFor(mVehicleDataProvider->updated()));
++                        message->header.stationID = mPseudonyms.front();
++                    } else {
++                        message = vanetza::asn1::CPM();
++                    }
++                } else {
++                    if (!receivedMessages[attackDataReplayCurrentStationId].empty()) {
++                        message = receivedMessages[attackDataReplayCurrentStationId].front();
++                        receivedMessages[attackDataReplayCurrentStationId].pop_front();
++                        message->cpm.generationDeltaTime = (uint16_t) countTaiMilliseconds(
++                                mTimer->getTimeFor(mVehicleDataProvider->updated()));
++                        message->header.stationID = mPseudonyms.front();
++                    } else {
++                        receivedMessages.erase(attackDataReplayCurrentStationId);
++                        attackDataReplayCurrentStationId = -1;
++                        message = vanetza::asn1::CPM();
++                        mPseudonymIndex = ++mPseudonymIndex % attackGridSybilVehicleCount;
++                    }
++                }
++                break;
++            }
++            case attackTypes::DoSRandomSybil: {
++                message->header.stationID = mPseudonyms[mPseudonymIndex++];
++                mPseudonymIndex %= attackGridSybilVehicleCount;
++                message->cpm.generationDeltaTime = (uint16_t) countTaiMilliseconds(mTimer->getTimeFor(simTime()));
++                long attackLatitude =
++                        (long) (uniform(-F2MDParameters::attackParameters.AttackRandomPositionMinLatitude,
++                                        F2MDParameters::attackParameters.AttackRandomPositionMaxLatitude) * 1000000);
++                long attackLongitude =
++                        (long) (uniform(-F2MDParameters::attackParameters.AttackRandomPositionMinLongitude,
++                                        F2MDParameters::attackParameters.AttackRandomPositionMaxLongitude) * 1000000);
++                message->cpm.cpmParameters.basicContainer.referencePosition.latitude =
++                        attackLatitude * Latitude_oneMicrodegreeNorth;
++                message->cpm.cpmParameters.basicContainer.referencePosition.longitude =
++                        attackLongitude * Longitude_oneMicrodegreeEast;
++                double randomSpeed = uniform(F2MDParameters::attackParameters.AttackRandomSpeedMin,
++                                             F2MDParameters::attackParameters.AttackRandomSpeedMax);
++                message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedValue = buildSpeedValue(
++                        randomSpeed * boost::units::si::meter_per_second);
++                break;
++            }
++            case attackTypes::DoSDisruptiveSybil: {
++                if (!receivedMessages.empty()) {
++                    auto it = receivedMessages.begin();
++                    int index = (int) uniform(0, (double) receivedMessages.size());
++                    std::advance(it, index);
++                    if (!it->second.empty()) {
++                        message = it->second.front();
++                        it->second.pop_front();
++                        if (it->second.empty()) {
++                            receivedMessages.erase(it->first);
++                        }
++                        message->cpm.generationDeltaTime = (uint16_t) countTaiMilliseconds(
++                                mTimer->getTimeFor(mVehicleDataProvider->updated()));
++                        message->header.stationID = mPseudonyms[mPseudonymIndex++];
++                        mPseudonymIndex %= attackGridSybilVehicleCount;
++                    } else {
++                        receivedMessages.erase(it->first);
++                        message = vanetza::asn1::CPM();
++                    }
++                } else {
++                    message = vanetza::asn1::CPM();
++                }
++                break;
++            }
++            case attackTypes::FakeReport: {
++                break;
++            }
++            default:
++                break;
++        }
++        return message;
++    }
++
++    vanetza::asn1::CPM MisbehaviorCpmService::getNextReplayCpm() {
++        vanetza::asn1::CPM message;
++        if (attackDataReplayCurrentStationId == -1) {
++            auto it = receivedMessages.begin();
++            if (it != receivedMessages.end()) {
++                int64_t mostReceivedStationId = -1;
++                int maxSize = 0;
++                for (; it != receivedMessages.end(); ++it) {
++                    if ((int) it->second.size() > maxSize) {
++                        maxSize = (int) it->second.size();
++                        mostReceivedStationId = it->first;
++                    }
++                }
++                attackDataReplayCurrentStationId = mostReceivedStationId;
++                message = receivedMessages[attackDataReplayCurrentStationId].front();
++                receivedMessages[attackDataReplayCurrentStationId].pop_front();
++                if (maxSize == 1) {
++                    receivedMessages.erase(attackDataReplayCurrentStationId);
++                }
++            } else {
++                message = vanetza::asn1::CPM();
++            }
++        } else {
++            if (!receivedMessages[attackDataReplayCurrentStationId].empty() &&
++                receivedMessages[attackDataReplayCurrentStationId].front()->cpm.generationDeltaTime <
++                (uint16_t) (countTaiMilliseconds(mTimer->getCurrentTime()) - 1100)) {
++                message = receivedMessages[attackDataReplayCurrentStationId].front();
++                receivedMessages[attackDataReplayCurrentStationId].pop_front();
++            } else {
++                receivedMessages.erase(attackDataReplayCurrentStationId);
++                attackDataReplayCurrentStationId = -1;
++                message = vanetza::asn1::CPM();
++            }
++        }
++        return message;
++    }
++
++    void MisbehaviorCpmService::createFakeReport() {
++        if (!receivedMessages.empty()) {
++            auto it = receivedMessages.begin();
++            int index = (int) uniform(0, (double) receivedMessages.size());
++            std::advance(it, index);
++            if (!it->second.empty()) {
++                std::shared_ptr<vanetza::asn1::CPM> cpm = std::make_shared<vanetza::asn1::CPM>(it->second.front());
++                it->second.pop_front();
++                std::string reportId(generateReportId((*cpm)->header.stationID,
++                                                      mVehicleDataProvider->getStationId(),
++                                                      getRNG(0)));
++                Report report(reportId, cpm, countTaiMilliseconds(mTimer->getTimeFor(simTime())));
++                auto detectionLevel = static_cast<detectionLevels::DetectionLevels>(intuniform(
++                        detectionLevels::Level1, detectionLevels::Level4));
++                std::bitset<16> errorCode;
++                errorCode[intuniform(0, 7)] = true;
++                switch (detectionLevel) {
++                    case detectionLevels::Level1:
++                        break;
++                    case detectionLevels::Level2: {
++                        if (it->second.empty()) {
++                            detectionLevel = detectionLevels::Level1;
++                        } else {
++                            std::vector<std::shared_ptr<vanetza::asn1::CPM>> evidenceCpms;
++                            for (int i = 0; i < std::min((int) it->second.size(),
++                                                         F2MDParameters::reportParameters.evidenceContainerMaxCpmCount); i++) {
++                                evidenceCpms.emplace_back(std::make_shared<vanetza::asn1::CPM>(it->second.back()));
++                                it->second.pop_back();
++                            }
++                            report.setReportedMessages(evidenceCpms,
++                                                       F2MDParameters::reportParameters.evidenceContainerMaxCpmCount);
++                        }
++                        break;
++                    }
++                    case detectionLevels::Level3: {
++                        std::vector<std::shared_ptr<vanetza::asn1::CPM>> neighbourCpms;
++                        for (auto iterator = receivedMessages.begin(), next_it = iterator;
++                             iterator != receivedMessages.end(); iterator = next_it) {
++                            ++next_it;
++                            if (iterator->first != it->first && !iterator->second.empty()) {
++                                neighbourCpms.emplace_back(
++                                        std::make_shared<vanetza::asn1::CPM>(iterator->second.back()));
++                                iterator->second.pop_back();
++                                if (iterator->second.empty()) {
++                                    receivedMessages.erase(iterator);
++                                    continue;
++                                }
++                            }
++                        }
++                        report.evidence.neighbourMessages = neighbourCpms;
++                        break;
++                    }
++                    case detectionLevels::Level4:
++                        report.fillSenderInfoContainer(mVehicleDataProvider, mVehicleController);
++                        break;
++                    default:
++                        break;
++                }
++                report.setSemanticDetection(detectionLevel, errorCode);
++                vanetza::asn1::MisbehaviorReport misbehaviorReport = report.encode();
++                MisbehaviorReportObject obj(std::move(misbehaviorReport));
++                emit(scSignalMisbehaviorAuthorityNewReport, &obj);
++                if (it->second.empty()) {
++                    receivedMessages.erase(it->first);
++                }
++            } else {
++                receivedMessages.erase(it->first);
++            }
++        }
++    }
++
++    void MisbehaviorCpmService::visualizeCpmPosition(vanetza::asn1::CPM cpm) {
++
++        std::vector<libsumo::TraCIColor> colors = {libsumo::TraCIColor(255, 0, 255, 255),
++                                                   libsumo::TraCIColor(207, 255, 0, 255),
++                                                   libsumo::TraCIColor(255, 155, 155, 255),
++                                                   libsumo::TraCIColor(0, 140, 255, 255),
++                                                   libsumo::TraCIColor(0, 255, 162, 255)};
++        libsumo::TraCIColor color = libsumo::TraCIColor(255, 0, 255, 255);
++        int maxActivePoIs = F2MDParameters::miscParameters.CpmLocationVisualizerMaxLength;
++        std::string poiId = {
++                mVehicleController->getVehicleId() + "_CPM_" + std::to_string(cpm->header.stationID) + "_" +
++                std::to_string((uint16_t) countTaiMilliseconds(mTimer->getCurrentTime()))};
++        if (mAttackType == attackTypes::GridSybil && attackGridSybilVehicleCount <= 5) {
++            color = colors[(attackGridSybilCurrentVehicleIndex + (attackGridSybilVehicleCount - 1)) %
++                           attackGridSybilVehicleCount];
++            maxActivePoIs = attackGridSybilVehicleCount;
++            poiId = {mVehicleController->getVehicleId() + "_CPM_" + std::to_string(cpm->header.stationID) + "_" +
++                     std::to_string((uint16_t) countTaiMilliseconds(
++                             mTimer->getCurrentTime()))};
++        }
++        traci::TraCIGeoPosition traciGeoPosition = {
++                (double) cpm->cpm.cpmParameters.basicContainer.referencePosition.longitude / 10000000.0,
++                (double) cpm->cpm.cpmParameters.basicContainer.referencePosition.latitude / 10000000.0};
++        traci::TraCIPosition traciPosition = mVehicleController->getTraCI()->convert2D(traciGeoPosition);
++        mTraciAPI->poi.add(poiId, traciPosition.x, traciPosition.y, color,
++                           poiId, 5, "", 0,
++                           0, 0);
++        activePoIs.push_back(poiId);
++        if (activePoIs.size() > maxActivePoIs) {
++            mTraciAPI->poi.remove(activePoIs.front());
++            activePoIs.pop_front();
++        }
++        if (mAttackType != attackTypes::GridSybil) {
++            int alphaStep = 185 / maxActivePoIs;
++            int currentAlpha = 80;
++            for (const auto &poi: activePoIs) {
++                mTraciAPI->poi.setColor(poi, libsumo::TraCIColor(255, 0, 255, currentAlpha));
++                currentAlpha += alphaStep;
++            }
++        }
++    }
++
++} // namespace artery
+Index: scenarios/f2md/sensors.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/scenarios/f2md/sensors.xml b/scenarios/f2md/sensors.xml
+--- a/scenarios/f2md/sensors.xml	(revision 7e4d871b88d4e9db0e8b23f6ff45787d8b33c52d)
++++ b/scenarios/f2md/sensors.xml	(date 1707329862094)
+@@ -1,4 +1,9 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <sensors>
++	<sensor name="FrontShortRangeRadar" type="artery.envmod.sensor.FrontRadar" />
++	<sensor name="FrontLongRangeRadar" type="artery.envmod.sensor.FrontRadar" />
++	<sensor name="RearLongRangeRadar" type="artery.envmod.sensor.RearRadar" />
++	<sensor name="RearShortRangeRadar" type="artery.envmod.sensor.RearRadar" />
++	<sensor name="SeeThrough" type="artery.envmod.sensor.SeeThroughSensor" />
+ 	<sensor type="artery.envmod.sensor.CamSensor" />
+ </sensors>
+Index: src/artery/application/misbehavior/MisbehaviorCpmService.h
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/src/artery/application/misbehavior/MisbehaviorCpmService.h b/src/artery/application/misbehavior/MisbehaviorCpmService.h
+new file mode 100644
+--- /dev/null	(date 1707609065660)
++++ b/src/artery/application/misbehavior/MisbehaviorCpmService.h	(date 1707609065660)
+@@ -0,0 +1,99 @@
++/*
++* Artery V2X Simulation Framework
++* Copyright 2014-2019 Raphael Riebl et al.
++* Licensed under GPLv2, see COPYING file for detailed license and warranty terms.
++*/
++
++#ifndef ARTERY_MISBEHAVIORCPMSERVICE_H_
++#define ARTERY_MISBEHAVIORCPMSERVICE_H_
++
++#include "artery/application/BaseCpmService.h"
++#include "artery/application/misbehavior/util/F2MDParameters.h"
++#include "artery/application/misbehavior/util/MisbehaviorTypes.h"
++#include "artery/application/misbehavior/util/AttackTypes.h"
++#include "artery/envmod/LocalEnvironmentModel.h"
++#include "artery/envmod/GlobalEnvironmentModel.h"
++#include "artery/utility/Channel.h"
++#include "artery/utility/Geometry.h"
++#include <vanetza/btp/data_interface.hpp>
++#include <map>
++
++namespace artery {
++
++    class NetworkInterfaceTable;
++
++    class Timer;
++
++    class VehicleDataProvider;
++
++    class MisbehaviorCpmService : public BaseCpmService {
++    public:
++        template<typename T, typename U>
++        static long round(const boost::units::quantity<T> &q, const U &u);
++
++        MisbehaviorCpmService() = default;
++
++        ~MisbehaviorCpmService() override;
++
++        void initialize() override;
++
++        void indicate(const vanetza::btp::DataIndication &, std::unique_ptr<vanetza::UpPacket>) override;
++
++        void trigger() override;
++
++        StationID_t getStationId() { return mVehicleDataProvider->getStationId(); };
++
++        misbehaviorTypes::MisbehaviorTypes getMisbehaviorType() { return mMisbehaviorType; };
++
++        attackTypes::AttackTypes getAttackType() { return mAttackType; };
++
++    private:
++        void sendCpm(const omnetpp::SimTime &);
++
++        vanetza::asn1::CPM createAttackCPM(uint16_t genDeltaTime);
++
++        void createFakeReport();
++
++        void initializeStaticParameters();
++
++        void visualizeCpmPosition(vanetza::asn1::CPM cpm);
++
++        vanetza::asn1::CPM getNextReplayCpm();
++
++        static bool staticInitializationComplete;
++        static GlobalEnvironmentModel *mGlobalEnvironmentModel;
++
++        const LocalEnvironmentModel *mLocalEnvironmentModel = nullptr;
++
++        misbehaviorTypes::MisbehaviorTypes mMisbehaviorType;
++        attackTypes::AttackTypes mAttackType;
++        std::vector<uint32_t> mPseudonyms;
++        int mPseudonymIndex = 0;
++        std::list<vanetza::asn1::CPM> disruptiveMessageQueue;
++        std::queue<vanetza::asn1::CPM> staleMessageQueue;
++        std::map<uint32_t, std::deque<vanetza::asn1::CPM>> receivedMessages;
++        std::list<std::string> activePoIs;
++
++        long AttackConstantPositionLatitudeMicrodegrees;
++        long AttackConstantPositionLongitudeMicrodegrees;
++        long AttackConstantPositionOffsetLatitudeMicrodegrees;
++        long AttackConstantPositionOffsetLongitudeMicrodegrees;
++        long AttackConstantSpeedValue;
++        vanetza::units::Velocity attackConstantSpeedOffsetValue;
++        bool attackEventualStopHasStopped;
++        ReferencePosition_t attackEventualStopPosition;
++        int64_t attackDataReplayCurrentStationId;
++        int attackGridSybilVehicleCount;
++        double attackGridSybilActualDistanceX;
++        double attackGridSybilActualDistanceY;
++        int attackGridSybilCurrentVehicleIndex;
++        double attackGridSybilLastHeadingAngle;
++        uint64_t attackFakeReportLastReportTime;
++
++        std::string lastPoiId;
++
++
++    };
++} // namespace artery
++
++#endif /* ARTERY_MISBEHAVIORCPMSERVICE_H_ */
+Index: src/artery/application/misbehavior/MisbehaviorCpmService.ned
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/src/artery/application/misbehavior/MisbehaviorCpmService.ned b/src/artery/application/misbehavior/MisbehaviorCpmService.ned
+new file mode 100644
+--- /dev/null	(date 1707609065668)
++++ b/src/artery/application/misbehavior/MisbehaviorCpmService.ned	(date 1707609065668)
+@@ -0,0 +1,115 @@
++package artery.application.misbehavior;
++
++//simple MisbehaviorCpmService like artery.application.ItsG5Service
++simple MisbehaviorCpmService like artery.application.BaseCpmService
++{
++    parameters:
++        @signal[CpmReceived](type=CpmObject);
++        @signal[CpmSent](type=CpmObject);
++        @signal[misbehaviorAuthority.MisbehaviorAnnouncement](simtime_t);
++        @signal[newMisbehaviorReport](type=MisbehaviorReportObject);
++
++        @statistic[reception](source=CpmReceived;record=vector(cpmStationId)?,vector(cpmGenerationDeltaTime)?);
++        @statistic[transmission](source=CpmSent;record=vector(cpmStationId)?,vector(cpmGenerationDeltaTime)?);
++
++        // evaluate DCC transmission interval restrictions
++        bool withDccRestriction = default(true);
++
++        // generation interval boundaries
++        double minInterval @unit(s) = default(0.1s);
++        double maxInterval @unit(s) = default(1.0s);
++
++        // generate at fixed rate (using minInterval, optionally restricted by DCC)
++        bool fixedRate = default(false);
++
++        // change in orientation triggering CAM generation (in degree)
++        double headingDelta = default(4.0);
++
++        // change in position triggering CAM generation
++        double positionDelta @unit(m) = default(4.0m);
++
++        // change in speed triggering CAM generation (in meter/second)
++        double speedDelta @unit(mps) = default(0.5mps);
++
++        // length of path history
++        volatile int pathHistoryLength = default(23);
++
++        string appName = default("MisbehaviorCpmService");
++
++        bool CpmLocationVisualizer = default(false);
++        int CpmLocationVisualizerMaxLength = default(500);
++
++
++        // ------ Attacks Parameters -- Start
++
++        // Specify static attack type according to attackTypes enum
++        volatile int StaticAttackType = default(-1);
++        string AttackType = default("");
++
++        // Constant Position Attack
++        double AttackConstantPositionMinLatitude = default(49.58);
++        double AttackConstantPositionMaxLatitude = default(49.63);
++        double AttackConstantPositionMinLongitude = default(6.09);
++        double AttackConstantPositionMaxLongitude = default(6.16);
++
++        // Constant Position Offset Attack
++        double AttackConstantPositionOffsetMaxLatitudeOffset = default(0.001);
++        double AttackConstantPositionOffsetMaxLongitudeOffset = default(0.001);
++
++        // Random Position Attack
++        double AttackRandomPositionMinLatitude = default(49.58);
++        double AttackRandomPositionMaxLatitude = default(49.63);
++        double AttackRandomPositionMinLongitude = default(6.09);
++        double AttackRandomPositionMaxLongitude = default(6.16);
++
++        // Random Position Offset Attack
++        double AttackRandomPositionOffsetMaxLatitudeOffset = default(0.001);
++        double AttackRandomPositionOffsetMaxLongitudeOffset = default(0.001);
++
++        // Constant Speed Attack
++        // Meters per Second
++        double AttackConstantSpeedMin = default(0.0);
++        double AttackConstantSpeedMax = default(163.82);
++
++        // Constant Speed Offset Attack
++        // only adds speed so that there aren't negative values
++        double AttackConstantSpeedOffsetMax = default(5.0);
++
++        // Random Speed Attack
++        // Meters per Second
++        double AttackRandomSpeedMin = default(0.0);
++        double AttackRandomSpeedMax = default(163.82);
++
++        // Random Speed Offset Attack
++        // only adds speed so that there aren't negative values
++        double AttackRandomSpeedOffsetMax = default(5.0);
++
++        // Eventual Stop Attack
++        double AttackEventualStopProbabilityThreshold = default(0.2);
++
++		// Disruptive Attack
++		int AttackDisruptiveBufferSize = default(50);
++		int AttackDisruptiveMinimumReceived = default(50);
++
++        // Denial of Service Attack
++        // Interval in ms
++        // Keep in mind that appl.middleware.updateInterval might need to be customized
++		int AttackDoSInterval = default(10);
++		bool AttackDoSIgnoreDCC = default(true);
++
++		// Stale Messages Attack
++		int AttackStaleDelayCount = default(50);
++
++        // Grid Sybil Attack
++        int AttackGridSybilVehicleCount = default(5);
++        int AttackGridSybilVehicleCountVariation = default(2);
++        bool AttackGridSybilSelfSybil = default(false);
++        double AttackGridSybilDistanceX = default(5);
++        double AttackGridSybilDistanceY = default(2);
++        double AttackGridSybilDistanceVariation = default(2);
++        double AttackGridSybilMaxDistanceFromRoad = default(5);
++
++        // Fake Report Attack
++        double AttackFakeReportInterval @unit(s) = default(2.0s);
++
++}
+\ No newline at end of file

@@ -3,6 +3,8 @@ add_library(core SHARED
         StaticNodeManager.cc
         application/CaObject.cc
         application/CaService.cc
+        application/CpmObject.cc
+        application/CpmService.cc
         application/DenmObject.cc
         application/DenService.cc
         application/ExampleService.cc
@@ -23,6 +25,7 @@ add_library(core SHARED
         application/PeriodicLoadService.cc
         application/PersonMiddleware.cc
         application/RsuCaService.cc
+        application/RsuCpmService.cc
         application/RtcmMockMessage.cc
         application/RtcmMockReceiver.cc
         application/RtcmMockService.cc
@@ -70,7 +73,9 @@ add_library(core SHARED
         utility/FilterRules.cc
         utility/Geometry.cc
         application/BaseCaService.cc
+        application/BaseCpmService.cc
         application/misbehavior/MisbehaviorCaService.cc
+        application/misbehavior/MisbehaviorCpmService.cc
         application/misbehavior/authority/MisbehaviorAuthority.cc
         application/misbehavior/authority/MisbehavingPseudonym.cc
         application/misbehavior/authority/MisbehavingVehicle.cc

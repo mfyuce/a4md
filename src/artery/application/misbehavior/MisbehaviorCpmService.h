@@ -50,15 +50,15 @@ namespace artery {
     private:
         void sendCpm(const omnetpp::SimTime &);
 
-        vanetza::asn1::CPM createAttackCPM(uint16_t genDeltaTime);
+        vanetza::asn1::Cpm createAttackCPM(uint16_t genDeltaTime);
 
         void createFakeReport();
 
         void initializeStaticParameters();
 
-        void visualizeCpmPosition(vanetza::asn1::CPM cpm);
+        void visualizeCpmPosition(vanetza::asn1::Cpm cpm);
 
-        vanetza::asn1::CPM getNextReplayCpm();
+        vanetza::asn1::Cpm getNextReplayCpm();
 
         static bool staticInitializationComplete;
         static GlobalEnvironmentModel *mGlobalEnvironmentModel;
@@ -69,9 +69,9 @@ namespace artery {
         attackTypes::AttackTypes mAttackType;
         std::vector<uint32_t> mPseudonyms;
         int mPseudonymIndex = 0;
-        std::list<vanetza::asn1::CPM> disruptiveMessageQueue;
-        std::queue<vanetza::asn1::CPM> staleMessageQueue;
-        std::map<uint32_t, std::deque<vanetza::asn1::CPM>> receivedMessages;
+        std::list<vanetza::asn1::Cpm> disruptiveMessageQueue;
+        std::queue<vanetza::asn1::Cpm> staleMessageQueue;
+        std::map<uint32_t, std::deque<vanetza::asn1::Cpm>> receivedMessages;
         std::list<std::string> activePoIs;
 
         long AttackConstantPositionLatitudeMicrodegrees;

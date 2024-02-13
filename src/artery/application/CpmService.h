@@ -34,7 +34,7 @@ namespace artery {
         static long round(const boost::units::quantity<T> &q, const U &u);
 
     private:
-        void sendCam(const omnetpp::SimTime &);
+        void sendCpm(const omnetpp::SimTime &);
     };
 
 } // namespace artery

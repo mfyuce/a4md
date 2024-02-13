@@ -361,6 +361,52 @@ namespace artery {
         }
     }
 
+    void MisbehaviorAuthority::processMisbehaviorAnnouncement(const std::vector<StationID_t> &stationIds,
+                                                              MisbehaviorCpmService *misbehaviorCpmService) {
+        if (stationIds.size() > 1) {
+            StationID_t vehicleStationId = stationIds.front();
+            attackTypes::AttackTypes attackType = misbehaviorCpmService->getAttackType();
+            std::shared_ptr<MisbehavingVehicle> misbehavingVehicle =
+                    std::make_shared<MisbehavingVehicle>(vehicleStationId,
+                                                         misbehaviorCpmService->getMisbehaviorType(),
+                                                         attackType);
+            mMisbehavingVehicles[vehicleStationId] = misbehavingVehicle;
+            mMisbehavingVehiclesByAttackType[attackType].insert(misbehavingVehicle);
+            for (const auto &stationId: stationIds) {
+                std::shared_ptr<MisbehavingPseudonym> misbehavingPseudonym =
+                        std::make_shared<MisbehavingPseudonym>(stationId,
+                                                               misbehaviorCpmService->getMisbehaviorType(),
+                                                               attackType, misbehavingVehicle);
+                mMisbehavingPseudonyms[stationId] = misbehavingPseudonym;
+                misbehavingVehicle->addPseudonym(misbehavingPseudonym);
+                std::string prefix =
+                        "misbehavingPseudonym_" + std::to_string(misbehavingPseudonym->getStationId()) + "_";
+                recordScalar((prefix + "misbehaviorType").c_str(), misbehavingPseudonym->getMisbehaviorType());
+                recordScalar((prefix + "attackType").c_str(), attackType);
+            }
+        } else {
+            StationID_t vehicleStationId = stationIds.front();
+            attackTypes::AttackTypes attackType = misbehaviorCpmService->getAttackType();
+            std::shared_ptr<MisbehavingVehicle> misbehavingVehicle =
+                    std::make_shared<MisbehavingVehicle>(vehicleStationId,
+                                                         misbehaviorCpmService->getMisbehaviorType(),
+                                                         attackType);
+            mMisbehavingVehicles[vehicleStationId] = misbehavingVehicle;
+            mMisbehavingVehiclesByAttackType[attackType].insert(misbehavingVehicle);
+
+            std::shared_ptr<MisbehavingPseudonym> misbehavingPseudonym =
+                    std::make_shared<MisbehavingPseudonym>(vehicleStationId,
+                                                           misbehaviorCpmService->getMisbehaviorType(),
+                                                           attackType, misbehavingVehicle);
+            mMisbehavingPseudonyms[vehicleStationId] = misbehavingPseudonym;
+            misbehavingVehicle->addPseudonym(misbehavingPseudonym);
+            std::string prefix =
+                    "misbehavingPseudonym_" + std::to_string(misbehavingPseudonym->getStationId()) + "_";
+            recordScalar((prefix + "misbehaviorType").c_str(), misbehavingPseudonym->getMisbehaviorType());
+            recordScalar((prefix + "attackType").c_str(), attackType);
+        }
+    }
+
     void MisbehaviorAuthority::processReport(const std::shared_ptr<Report> &report) {
         mTotalReportCount++;
         mNewReport = true;

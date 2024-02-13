@@ -148,82 +148,82 @@ void CollectivePerceptionMockService::indicate(const vanetza::btp::DataIndicatio
 }
 
 
-void CollectivePerceptionMockService::recordPacket(CollectivePerceptionMockMessage& cpm, std::stringstream& buffer)
-{
-    ostream_mutex.lock();
-    using namespace vanetza;
-    buffer << "{";
+    void CollectivePerceptionMockService::recordPacket(CollectivePerceptionMockMessage& cpm, std::stringstream& buffer)
     {
-        buffer << "\"step\":" << omnetpp::simTime().dbl() << ","
-               << "\"destination_port\":" << host_cast<PortNumber>(getPortNumber()) << ","
-               << "\"transport_type\":" << static_cast<int>(geonet::TransportType::SHB) << ","
-           << "\"tc_id\":" << mDccProfile << ","
-           << "\"communication_profile\":" << static_cast<int>(geonet::CommunicationProfile::ITS_G5) << ",";
-
-
-    buffer << "\"fov_containers\": [ ";
+        ostream_mutex.lock();
+        using namespace vanetza;
+        buffer << "{";
         {
-    for (CollectivePerceptionMockMessage::FovContainer fovContainer : cpm.getFovContainers()) {
-        buffer << "{"
-               << "\"angle\":" << fovContainer.fov.angle.value() << ","
-               << "\"range\":" << fovContainer.fov.range.value() << ","
-               << "\"position\":" << static_cast<int>(fovContainer.position) << ","
-               << "\"sensorId\":" << fovContainer.sensorId << "},";
-    }
-        };
-    buffer << "],";
+            buffer << "\"step\":" << omnetpp::simTime().dbl() << ","
+                   << "\"destination_port\":" << host_cast<PortNumber>(getPortNumber()) << ","
+                   << "\"transport_type\":" << static_cast<int>(geonet::TransportType::SHB) << ","
+                   << "\"tc_id\":" << mDccProfile << ","
+                   << "\"communication_profile\":" << static_cast<int>(geonet::CommunicationProfile::ITS_G5) << ",";
 
-    buffer << "\"last_fov\":" << mFovLast << ",";
 
-    buffer << "\"tracked_objects\": [ ";
-        {
-    for (const auto& objectContainer : cpm.getObjectContainers()) {
-            buffer << "{";
+            buffer << "\"fov_containers\": [ ";
             {
-        buffer << "\"objectId\":" << objectContainer.objectId << ","
-               << "\"sensorId\":" << objectContainer.sensorId << ","
-               << "\"timeOfMeasurement\":" << objectContainer.timeOfMeasurement << ",";
+                for (CollectivePerceptionMockMessage::FovContainer fovContainer : cpm.getFovContainers()) {
+                    buffer << "{"
+                           << "\"angle\":" << fovContainer.fov.angle.value() << ","
+                           << "\"range\":" << fovContainer.fov.range.value() << ","
+                           << "\"position\":" << static_cast<int>(fovContainer.position) << ","
+                           << "\"sensorId\":" << fovContainer.sensorId << "},";
+                }
+            };
+            buffer << "],";
 
-        EnvironmentModelObject* o = objectContainer.object.lock().get();
-        if (o != NULL) {
-            buffer << "\"object\": { "
-                   << "\"center_x\":" << o->getCentrePoint().x.value() << ","
-                   << "\"center_y\":" << o->getCentrePoint().y.value() << ","
-                   << "\"external_id\":\"" << o->getExternalId() << "\","
-                   << "\"length\":" << o->getLength().value()
-                   << ","
-                   // TODO: o->getOutline()
-                   << "\"radius\":" << o->getRadius().value() << ","
-                   << "\"width\":" << o->getWidth().value() << ","
-                   << "\"vehicle\": {"
-                   << "\"x\":" << o->getVehicleData().position().x.value() << ","
-                   << "\"y\":" << o->getVehicleData().position().y.value() << ","
-                   << "\"acceleration\":" << o->getVehicleData().acceleration().value() << ","
-                   << "\"curvature\":" << o->getVehicleData().curvature().value() << ","
-                   << "\"curvature_confidence\":" << o->getVehicleData().curvature_confidence() << ","
-                   << "\"station_id\":" << o->getVehicleData().station_id() << ","
-                   << "\"station_type\":" << static_cast<int>(o->getVehicleData().getStationType()) << ","
-                   << "\"heading\":" << o->getVehicleData().heading().value() << ","
-                   << "\"latitude\":" << o->getVehicleData().latitude().value() << ","
-                   << "\"longitude\":" << o->getVehicleData().longitude().value() << ","
-                   << "\"speed\":" << o->getVehicleData().speed().value() << ","
-                   << "\"updated\":" << o->getVehicleData().updated().dbl() << ","
-                           << "\"yaw_rate\":" << o->getVehicleData().yaw_rate().value() << "}"
-                   << "}";
-        }
-        buffer << "},";
-    }
-        }
-    buffer << "],";
+            buffer << "\"last_fov\":" << mFovLast << ",";
+
+            buffer << "\"tracked_objects\": [ ";
+            {
+                for (const auto& objectContainer : cpm.getObjectContainers()) {
+                    buffer << "{";
+                    {
+                        buffer << "\"objectId\":" << objectContainer.objectId << ","
+                               << "\"sensorId\":" << objectContainer.sensorId << ","
+                               << "\"timeOfMeasurement\":" << objectContainer.timeOfMeasurement << ",";
+
+                        EnvironmentModelObject* o = objectContainer.object.lock().get();
+                        if (o != NULL) {
+                            buffer << "\"object\": { "
+                                   << "\"center_x\":" << o->getCentrePoint().x.value() << ","
+                                   << "\"center_y\":" << o->getCentrePoint().y.value() << ","
+                                   << "\"external_id\":\"" << o->getExternalId() << "\","
+                                   << "\"length\":" << o->getLength().value()
+                                   << ","
+                                   // TODO: o->getOutline()
+                                   << "\"radius\":" << o->getRadius().value() << ","
+                                   << "\"width\":" << o->getWidth().value() << ","
+                                   << "\"vehicle\": {"
+                                   << "\"x\":" << o->getVehicleData().position().x.value() << ","
+                                   << "\"y\":" << o->getVehicleData().position().y.value() << ","
+                                   << "\"acceleration\":" << o->getVehicleData().acceleration().value() << ","
+                                   << "\"curvature\":" << o->getVehicleData().curvature().value() << ","
+                                   << "\"curvature_confidence\":" << o->getVehicleData().curvature_confidence() << ","
+                                   << "\"station_id\":" << o->getVehicleData().station_id() << ","
+                                   << "\"station_type\":" << static_cast<int>(o->getVehicleData().getStationType()) << ","
+                                   << "\"heading\":" << o->getVehicleData().heading().value() << ","
+                                   << "\"latitude\":" << o->getVehicleData().latitude().value() << ","
+                                   << "\"longitude\":" << o->getVehicleData().longitude().value() << ","
+                                   << "\"speed\":" << o->getVehicleData().speed().value() << ","
+                                   << "\"updated\":" << o->getVehicleData().updated().dbl() << ","
+                                   << "\"yaw_rate\":" << o->getVehicleData().yaw_rate().value() << "}"
+                                   << "}";
+                        }
+                        buffer << "},";
+                    }
+                }
+                buffer << "],";
+            };
+
+            buffer << "\"length\":" << cpm.getByteLength() << ","
+                   << "\"mHostId\":" << mHostId << "},"
+                   << "\n";
         };
 
-    buffer << "\"length\":" << cpm.getByteLength() << ","
-                  << "\"mHostId\":" << mHostId << "},"
-                  << "\n";
-    };
-
-    ostream_mutex.unlock();
-}
+        ostream_mutex.unlock();
+    }
 
 
 void CollectivePerceptionMockService::recordPacket(CollectivePerceptionMockMessage& cpm, std::stringstream& buffer)

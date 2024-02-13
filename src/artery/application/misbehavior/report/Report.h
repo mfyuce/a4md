@@ -101,6 +101,8 @@ namespace artery {
         static void decodeMessageEvidenceContainer(const MessageEvidenceContainer &messageEvidenceContainer,
                                                    std::vector<std::shared_ptr<vanetza::asn1::Cam>> &messages);
 
+        static void decodeMessageEvidenceContainer(const MessageEvidenceContainer &messageEvidenceContainer,
+                                                   std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &messages);
         static std::shared_ptr<vanetza::asn1::Cam> getCamFromOpaque(const Opaque_t &data);
         static std::shared_ptr<vanetza::asn1::Cpm> getCpmFromOpaque(const Opaque_t &data);
     };

@@ -169,8 +169,8 @@ namespace artery {
 
     void MisbehaviorCpmService::initializeStaticParameters() {
         // CPM Location Visualizer (PoI)
-        F2MDParameters::miscParameters.CpmmLocationVisualizer = par("CpmmLocationVisualizer");
-        F2MDParameters::miscParameters.CpmmLocationVisualizerMaxLength = par("CpmmLocationVisualizerMaxLength");
+        F2MDParameters::miscParameters.CpmLocationVisualizer = par("CpmLocationVisualizer");
+        F2MDParameters::miscParameters.CpmLocationVisualizerMaxLength = par("CpmLocationVisualizerMaxLength");
 
 //        F2MDParameters::attackParameters.StaticAttackType = par("StaticAttackType");
 
@@ -265,8 +265,8 @@ namespace artery {
     MisbehaviorCpmService::indicate(const vanetza::btp::DataIndication &ind, std::unique_ptr<vanetza::UpPacket> packet) {
         Enter_Method("indicate");
 
-        Asn1PacketVisitor<vanetza::asn1::CPM> visitor;
-        const vanetza::asn1::CPM *cpm = boost::apply_visitor(visitor, *packet);
+        Asn1PacketVisitor<vanetza::asn1::Cpm> visitor;
+        const vanetza::asn1::Cpm *cpm = boost::apply_visitor(visitor, *packet);
         if (cpm && cpm->validate()) {
             CpmObject obj = visitor.shared_wrapper;
             emit(scSignalCpmReceived, &obj);
@@ -295,12 +295,12 @@ namespace artery {
         }
     }
 
-    void MisbehaviorCpmService::sendCPM(const SimTime &T_now) {
+    void MisbehaviorCpmService::sendCpm(const SimTime &T_now) {
         uint16_t genDeltaTimeMod = countTaiMilliseconds(mTimer->getTimeFor(mVehicleDataProvider->updated()));
-        vanetza::asn1::CPM cpm;
+        vanetza::asn1::Cpm cpm;
         switch (mMisbehaviorType) {
             case misbehaviorTypes::Benign:
-                cpm = createCooperativeAwarenessMessage(genDeltaTimeMod);
+                cpm = createCollectivePerceptionMessage(genDeltaTimeMod);
                 break;
             case misbehaviorTypes::LocalAttacker: {
                 cpm = createAttackCPM(genDeltaTimeMod);
@@ -310,7 +310,7 @@ namespace artery {
                 cpm = createAttackCPM(genDeltaTimeMod);
                 break;
             default:
-                cpm = createCooperativeAwarenessMessage(genDeltaTimeMod);
+                cpm = createCollectivePerceptionMessage(genDeltaTimeMod);
         }
         if (cpm->header.messageID != 2) {
             return;
@@ -321,25 +321,25 @@ namespace artery {
         finalizeAndSendCpm(cpm, T_now);
     }
 
-    vanetza::asn1::CPM MisbehaviorCpmService::createAttackCPM(uint16_t genDeltaTime) {
-        vanetza::asn1::CPM message = createCooperativeAwarenessMessage(genDeltaTime);
+    vanetza::asn1::Cpm MisbehaviorCpmService::createAttackCPM(uint16_t genDeltaTime) {
+        vanetza::asn1::Cpm message = createCollectivePerceptionMessage(genDeltaTime);
 
         switch (mAttackType) {
             case attackTypes::Benign:
                 break;
             case attackTypes::ConstPos: {
-                message->cpm.cpmParameters.basicContainer.referencePosition.latitude =
+                message->cpm.cpmParameters.managementContainer.referencePosition.latitude =
                         AttackConstantPositionLatitudeMicrodegrees * Latitude_oneMicrodegreeNorth;
-                message->cpm.cpmParameters.basicContainer.referencePosition.longitude =
+                message->cpm.cpmParameters.managementContainer.referencePosition.longitude =
                         AttackConstantPositionLongitudeMicrodegrees * Longitude_oneMicrodegreeEast;
                 break;
             }
             case attackTypes::ConstPosOffset: {
-                message->cpm.cpmParameters.basicContainer.referencePosition.latitude =
+                message->cpm.cpmParameters.managementContainer.referencePosition.latitude =
                         (round(mVehicleDataProvider->latitude(), microdegree) +
                          AttackConstantPositionOffsetLatitudeMicrodegrees) *
                         Latitude_oneMicrodegreeNorth;
-                message->cpm.cpmParameters.basicContainer.referencePosition.longitude =
+                message->cpm.cpmParameters.managementContainer.referencePosition.longitude =
                         (round(mVehicleDataProvider->longitude(), microdegree) +
                          AttackConstantPositionOffsetLongitudeMicrodegrees) *
                         Longitude_oneMicrodegreeEast;
@@ -352,9 +352,9 @@ namespace artery {
                 long attackLongitude =
                         (long) (uniform(-F2MDParameters::attackParameters.AttackRandomPositionMinLongitude,
                                         F2MDParameters::attackParameters.AttackRandomPositionMaxLongitude) * 1000000);
-                message->cpm.cpmParameters.basicContainer.referencePosition.latitude =
+                message->cpm.cpmParameters.managementContainer.referencePosition.latitude =
                         attackLatitude * Latitude_oneMicrodegreeNorth;
-                message->cpm.cpmParameters.basicContainer.referencePosition.longitude =
+                message->cpm.cpmParameters.managementContainer.referencePosition.longitude =
                         attackLongitude * Longitude_oneMicrodegreeEast;
                 break;
             }
@@ -367,16 +367,16 @@ namespace artery {
                         uniform(-F2MDParameters::attackParameters.AttackRandomPositionOffsetMaxLongitudeOffset,
                                 F2MDParameters::attackParameters.AttackRandomPositionOffsetMaxLongitudeOffset) *
                         1000000);
-                message->cpm.cpmParameters.basicContainer.referencePosition.latitude =
+                message->cpm.cpmParameters.managementContainer.referencePosition.latitude =
                         (round(mVehicleDataProvider->latitude(), microdegree) + attackLatitudeOffset) *
                         Latitude_oneMicrodegreeNorth;
-                message->cpm.cpmParameters.basicContainer.referencePosition.longitude =
+                message->cpm.cpmParameters.managementContainer.referencePosition.longitude =
                         (round(mVehicleDataProvider->longitude(), microdegree) + attackLongitudeOffset) *
                         Longitude_oneMicrodegreeEast;
                 break;
             }
             case attackTypes::ConstSpeed: {
-                message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedValue = AttackConstantSpeedValue;
+                message->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer.speed.speedValue = AttackConstantSpeedValue;
                 break;
             }
             case attackTypes::ConstSpeedOffset: {
@@ -387,36 +387,36 @@ namespace artery {
                 } else {
                     speed = mVehicleDataProvider->speed() + attackConstantSpeedOffsetValue;
                 }
-                message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedValue =
+                message->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer.speed.speedValue =
                         buildSpeedValue(speed);
                 break;
             }
             case attackTypes::RandomSpeed: {
                 double randomSpeed = uniform(F2MDParameters::attackParameters.AttackRandomSpeedMin,
                                              F2MDParameters::attackParameters.AttackRandomSpeedMax);
-                message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedValue = buildSpeedValue(
+                message->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer.speed.speedValue = buildSpeedValue(
                         randomSpeed * boost::units::si::meter_per_second);
                 break;
             }
             case attackTypes::RandomSpeedOffset: {
                 double speed = std::min(0.0, uniform(-F2MDParameters::attackParameters.AttackRandomSpeedOffsetMax,
                                                      F2MDParameters::attackParameters.AttackRandomSpeedOffsetMax));
-                message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedValue = buildSpeedValue(
+                message->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer.speed.speedValue = buildSpeedValue(
                         mVehicleDataProvider->speed() +
                         (speed * boost::units::si::meter_per_second));
                 break;
             }
             case attackTypes::EventualStop: {
                 if (attackEventualStopHasStopped) {
-                    message->cpm.cpmParameters.basicContainer.referencePosition = attackEventualStopPosition;
-                    message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedValue = 0;
-                    message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.longitudinalAcceleration.longitudinalAccelerationValue = 0;
+                    message->cpm.cpmParameters.managementContainer.referencePosition = attackEventualStopPosition;
+                    message->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer.speed.speedValue = 0;
+                    message->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer.longitudinalAcceleration->longitudinalAccelerationValue = 0;
                 } else {
                     if (F2MDParameters::attackParameters.AttackEventualStopProbabilityThreshold > uniform(0, 1)) {
                         attackEventualStopHasStopped = true;
-                        attackEventualStopPosition = message->cpm.cpmParameters.basicContainer.referencePosition;
-                        message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedValue = 0;
-                        message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.longitudinalAcceleration.longitudinalAccelerationValue = 0;
+                        attackEventualStopPosition = message->cpm.cpmParameters.managementContainer.referencePosition;
+                        message->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer.speed.speedValue = 0;
+                        message->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer.longitudinalAcceleration->longitudinalAccelerationValue = 0;
                     } else {
                     }
                 }
@@ -433,7 +433,7 @@ namespace artery {
                             mTimer->getTimeFor(mVehicleDataProvider->updated()));
                     message->header.stationID = mVehicleDataProvider->getStationId();
                 } else {
-                    message = vanetza::asn1::CPM();
+                    message = vanetza::asn1::Cpm();
                 }
                 break;
             }
@@ -456,7 +456,7 @@ namespace artery {
                     message->cpm.generationDeltaTime = (uint16_t) countTaiMilliseconds(
                             mTimer->getTimeFor(mVehicleDataProvider->updated()));
                 } else {
-                    message = vanetza::asn1::CPM();
+                    message = vanetza::asn1::Cpm();
                 }
                 break;
             }
@@ -472,13 +472,13 @@ namespace artery {
                 long attackLongitude =
                         (long) (uniform(-F2MDParameters::attackParameters.AttackRandomPositionMinLongitude,
                                         F2MDParameters::attackParameters.AttackRandomPositionMaxLongitude) * 1000000);
-                message->cpm.cpmParameters.basicContainer.referencePosition.latitude =
+                message->cpm.cpmParameters.managementContainer.referencePosition.latitude =
                         attackLatitude * Latitude_oneMicrodegreeNorth;
-                message->cpm.cpmParameters.basicContainer.referencePosition.longitude =
+                message->cpm.cpmParameters.managementContainer.referencePosition.longitude =
                         attackLongitude * Longitude_oneMicrodegreeEast;
                 double randomSpeed = uniform(F2MDParameters::attackParameters.AttackRandomSpeedMin,
                                              F2MDParameters::attackParameters.AttackRandomSpeedMax);
-                message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedValue = buildSpeedValue(
+                message->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer.speed.speedValue = buildSpeedValue(
                         randomSpeed * boost::units::si::meter_per_second);
                 break;
             }
@@ -498,10 +498,10 @@ namespace artery {
                         message->header.stationID = mVehicleDataProvider->getStationId();
                     } else {
                         receivedMessages.erase(it->first);
-                        message = vanetza::asn1::CPM();
+                        message = vanetza::asn1::Cpm();
                     }
                 } else {
-                    message = vanetza::asn1::CPM();
+                    message = vanetza::asn1::Cpm();
                 }
                 break;
             }
@@ -512,20 +512,20 @@ namespace artery {
                 } else {
                     message = getNextReplayCpm();
                     if (message->header.messageID != 2) {
-                        message = vanetza::asn1::CPM();
+                        message = vanetza::asn1::Cpm();
                         break;
                     } else {
                         offsetIndex = attackGridSybilCurrentVehicleIndex + 1;
                     }
                 }
-                BasicVehicleContainerHighFrequency &hfc =
-                        message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency;
-                double width = hfc.vehicleWidth == VehicleWidth_unavailable ?
+                OriginatingVehicleContainer &hfc =
+                        message->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer;
+                double width = (long)hfc.vehicleWidth == (long)VehicleWidth_unavailable ?
                                mVehicleController->getLength().value() :
-                               (double) hfc.vehicleWidth / 10;
-                double length = hfc.vehicleLength.vehicleLengthValue == VehicleLengthValue_unavailable ?
+                               (double) (long)hfc.vehicleWidth / 10;
+                double length = hfc.vehicleLength->vehicleLengthValue == VehicleLengthValue_unavailable ?
                                 mVehicleController->getLength().value() :
-                                (double) hfc.vehicleLength.vehicleLengthValue / 10;
+                                (double) hfc.vehicleLength->vehicleLengthValue / 10;
                 double offsetX = -((double) offsetIndex / 2) *
                                  (width + attackGridSybilActualDistanceX) +
                                  uniform(-attackGridSybilActualDistanceX / 10, attackGridSybilActualDistanceX / 10);
@@ -533,7 +533,7 @@ namespace artery {
                                  (length + attackGridSybilActualDistanceY) +
                                  uniform(-attackGridSybilActualDistanceY / 10, attackGridSybilActualDistanceY / 10);
 
-                ReferencePosition_t &referencePosition = message->cpm.cpmParameters.basicContainer.referencePosition;
+                ReferencePosition_t &referencePosition = message->cpm.cpmParameters.managementContainer.referencePosition;
                 Position originalPosition = convertReferencePosition(referencePosition, mSimulationBoundary, mTraciAPI);
 
                 Position relativePosition = Position(offsetX, offsetY);
@@ -548,7 +548,7 @@ namespace artery {
                                                   originalPosition.y.value() + relativeY);
                 if (getDistanceToNearestRoad(mGlobalEnvironmentModel, sybilPosition) >
                     F2MDParameters::attackParameters.AttackGridSybilMaxDistanceFromRoad) {
-                    message = vanetza::asn1::CPM();
+                    message = vanetza::asn1::Cpm();
                     break;
                 }
                 setPositionWithJitter(referencePosition, sybilPosition, mSimulationBoundary, mTraciAPI, getRNG(0));
@@ -559,15 +559,15 @@ namespace artery {
                                                       std::min(16382,
                                                                (int) (hfc.speed.speedValue + speedConfidence)));
                 }
-                if (hfc.longitudinalAcceleration.longitudinalAccelerationConfidence !=
+                if (hfc.longitudinalAcceleration->longitudinalAccelerationConfidence !=
                     AccelerationConfidence_unavailable) {
-                    long accelerationConfidence = hfc.longitudinalAcceleration.longitudinalAccelerationConfidence;
-                    hfc.longitudinalAcceleration.longitudinalAccelerationValue =
+                    long accelerationConfidence = hfc.longitudinalAcceleration->longitudinalAccelerationConfidence;
+                    hfc.longitudinalAcceleration->longitudinalAccelerationValue =
                             intuniform(std::max(-160,
-                                                (int) (hfc.longitudinalAcceleration.longitudinalAccelerationValue -
+                                                (int) (hfc.longitudinalAcceleration->longitudinalAccelerationValue -
                                                        accelerationConfidence)),
                                        std::min(160,
-                                                (int) (hfc.longitudinalAcceleration.longitudinalAccelerationValue +
+                                                (int) (hfc.longitudinalAcceleration->longitudinalAccelerationValue +
                                                        accelerationConfidence)));
                 }
                 if (hfc.heading.headingConfidence != HeadingConfidence_unavailable) {
@@ -581,7 +581,7 @@ namespace artery {
                 steeringAngle = steeringAngle > 180 ? 360 - steeringAngle : steeringAngle;
                 attackGridSybilLastHeadingAngle = currentHeadingAngle;
                 if (steeringAngle > 5 && attackGridSybilCurrentVehicleIndex > 0) {
-                    message = vanetza::asn1::CPM();
+                    message = vanetza::asn1::Cpm();
                     break;
                 }
 
@@ -611,7 +611,7 @@ namespace artery {
                                 mTimer->getTimeFor(mVehicleDataProvider->updated()));
                         message->header.stationID = mPseudonyms.front();
                     } else {
-                        message = vanetza::asn1::CPM();
+                        message = vanetza::asn1::Cpm();
                     }
                 } else {
                     if (!receivedMessages[attackDataReplayCurrentStationId].empty()) {
@@ -623,7 +623,7 @@ namespace artery {
                     } else {
                         receivedMessages.erase(attackDataReplayCurrentStationId);
                         attackDataReplayCurrentStationId = -1;
-                        message = vanetza::asn1::CPM();
+                        message = vanetza::asn1::Cpm();
                         mPseudonymIndex = ++mPseudonymIndex % attackGridSybilVehicleCount;
                     }
                 }
@@ -639,13 +639,13 @@ namespace artery {
                 long attackLongitude =
                         (long) (uniform(-F2MDParameters::attackParameters.AttackRandomPositionMinLongitude,
                                         F2MDParameters::attackParameters.AttackRandomPositionMaxLongitude) * 1000000);
-                message->cpm.cpmParameters.basicContainer.referencePosition.latitude =
+                message->cpm.cpmParameters.managementContainer.referencePosition.latitude =
                         attackLatitude * Latitude_oneMicrodegreeNorth;
-                message->cpm.cpmParameters.basicContainer.referencePosition.longitude =
+                message->cpm.cpmParameters.managementContainer.referencePosition.longitude =
                         attackLongitude * Longitude_oneMicrodegreeEast;
                 double randomSpeed = uniform(F2MDParameters::attackParameters.AttackRandomSpeedMin,
                                              F2MDParameters::attackParameters.AttackRandomSpeedMax);
-                message->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedValue = buildSpeedValue(
+                message->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer.speed.speedValue = buildSpeedValue(
                         randomSpeed * boost::units::si::meter_per_second);
                 break;
             }
@@ -666,10 +666,10 @@ namespace artery {
                         mPseudonymIndex %= attackGridSybilVehicleCount;
                     } else {
                         receivedMessages.erase(it->first);
-                        message = vanetza::asn1::CPM();
+                        message = vanetza::asn1::Cpm();
                     }
                 } else {
-                    message = vanetza::asn1::CPM();
+                    message = vanetza::asn1::Cpm();
                 }
                 break;
             }
@@ -682,8 +682,8 @@ namespace artery {
         return message;
     }
 
-    vanetza::asn1::CPM MisbehaviorCpmService::getNextReplayCpm() {
-        vanetza::asn1::CPM message;
+    vanetza::asn1::Cpm MisbehaviorCpmService::getNextReplayCpm() {
+        vanetza::asn1::Cpm message;
         if (attackDataReplayCurrentStationId == -1) {
             auto it = receivedMessages.begin();
             if (it != receivedMessages.end()) {
@@ -702,7 +702,7 @@ namespace artery {
                     receivedMessages.erase(attackDataReplayCurrentStationId);
                 }
             } else {
-                message = vanetza::asn1::CPM();
+                message = vanetza::asn1::Cpm();
             }
         } else {
             if (!receivedMessages[attackDataReplayCurrentStationId].empty() &&
@@ -713,7 +713,7 @@ namespace artery {
             } else {
                 receivedMessages.erase(attackDataReplayCurrentStationId);
                 attackDataReplayCurrentStationId = -1;
-                message = vanetza::asn1::CPM();
+                message = vanetza::asn1::Cpm();
             }
         }
         return message;
@@ -725,7 +725,7 @@ namespace artery {
             int index = (int) uniform(0, (double) receivedMessages.size());
             std::advance(it, index);
             if (!it->second.empty()) {
-                std::shared_ptr<vanetza::asn1::CPM> cpm = std::make_shared<vanetza::asn1::CPM>(it->second.front());
+                std::shared_ptr<vanetza::asn1::Cpm> cpm = std::make_shared<vanetza::asn1::Cpm>(it->second.front());
                 it->second.pop_front();
                 std::string reportId(generateReportId((*cpm)->header.stationID,
                                                       mVehicleDataProvider->getStationId(),
@@ -742,10 +742,10 @@ namespace artery {
                         if (it->second.empty()) {
                             detectionLevel = detectionLevels::Level1;
                         } else {
-                            std::vector<std::shared_ptr<vanetza::asn1::CPM>> evidenceCpms;
+                            std::vector<std::shared_ptr<vanetza::asn1::Cpm>> evidenceCpms;
                             for (int i = 0; i < std::min((int) it->second.size(),
                                                          F2MDParameters::reportParameters.evidenceContainerMaxCpmCount); i++) {
-                                evidenceCpms.emplace_back(std::make_shared<vanetza::asn1::CPM>(it->second.back()));
+                                evidenceCpms.emplace_back(std::make_shared<vanetza::asn1::Cpm>(it->second.back()));
                                 it->second.pop_back();
                             }
                             report.setReportedMessages(evidenceCpms,
@@ -754,13 +754,13 @@ namespace artery {
                         break;
                     }
                     case detectionLevels::Level3: {
-                        std::vector<std::shared_ptr<vanetza::asn1::CPM>> neighbourCpms;
+                        std::vector<std::shared_ptr<vanetza::asn1::Cpm>> neighbourCpms;
                         for (auto iterator = receivedMessages.begin(), next_it = iterator;
                              iterator != receivedMessages.end(); iterator = next_it) {
                             ++next_it;
                             if (iterator->first != it->first && !iterator->second.empty()) {
                                 neighbourCpms.emplace_back(
-                                        std::make_shared<vanetza::asn1::CPM>(iterator->second.back()));
+                                        std::make_shared<vanetza::asn1::Cpm>(iterator->second.back()));
                                 iterator->second.pop_back();
                                 if (iterator->second.empty()) {
                                     receivedMessages.erase(iterator);
@@ -768,7 +768,7 @@ namespace artery {
                                 }
                             }
                         }
-                        report.evidence.neighbourMessages = neighbourCpms;
+                        report.evidence.neighbourCpmMessages = neighbourCpms;
                         break;
                     }
                     case detectionLevels::Level4:
@@ -790,7 +790,7 @@ namespace artery {
         }
     }
 
-    void MisbehaviorCpmService::visualizeCpmPosition(vanetza::asn1::CPM cpm) {
+    void MisbehaviorCpmService::visualizeCpmPosition(vanetza::asn1::Cpm cpm) {
 
         std::vector<libsumo::TraCIColor> colors = {libsumo::TraCIColor(255, 0, 255, 255),
                                                    libsumo::TraCIColor(207, 255, 0, 255),
@@ -811,8 +811,8 @@ namespace artery {
                              mTimer->getCurrentTime()))};
         }
         traci::TraCIGeoPosition traciGeoPosition = {
-                (double) cpm->cpm.cpmParameters.basicContainer.referencePosition.longitude / 10000000.0,
-                (double) cpm->cpm.cpmParameters.basicContainer.referencePosition.latitude / 10000000.0};
+                (double) cpm->cpm.cpmParameters.managementContainer.referencePosition.longitude / 10000000.0,
+                (double) cpm->cpm.cpmParameters.managementContainer.referencePosition.latitude / 10000000.0};
         traci::TraCIPosition traciPosition = mVehicleController->getTraCI()->convert2D(traciGeoPosition);
         mTraciAPI->poi.add(poiId, traciPosition.x, traciPosition.y, color,
                            poiId, 5, "", 0,

@@ -30,7 +30,7 @@ public:
     omnetpp::cObject* dup() const override;
 
 private:
-    std::shared_ptr<const vanetza::asn1::Cpm> m_cam_wrapper;
+    std::shared_ptr<const vanetza::asn1::Cpm> m_cpm_wrapper;
 };
 
 } // namespace artery

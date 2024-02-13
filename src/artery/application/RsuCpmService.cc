@@ -96,7 +96,7 @@ void RsuCpmService::indicate(const vanetza::btp::DataIndication& ind, std::uniqu
     Asn1PacketVisitor<vanetza::asn1::Cpm> visitor;
     const vanetza::asn1::Cpm* cpm = boost::apply_visitor(visitor, *packet);
     if (cpm && cpm->validate()) {
-        CaObject obj = visitor.shared_wrapper;
+        CpmObject obj = visitor.shared_wrapper;
         emit(scSignalCpmReceived, &obj);
         mLocalDynamicMap->updateAwareness(obj);
     }
@@ -131,43 +131,45 @@ vanetza::asn1::Cpm RsuCpmService::createMessage() const
     header.messageID = ItsPduHeader__messageID_cpm;
     header.stationID = mIdentity->application;
 
-    CoopAwareness_t& cpm = (*message).cpm;
+    CollectivePerceptionMessage_t& cpm = (*message).cpm;
     const uint16_t genDeltaTime = countTaiMilliseconds(mTimer->getCurrentTime());
     cpm.generationDeltaTime = genDeltaTime * GenerationDeltaTime_oneMilliSec;
-    BasicContainer_t& basic = cpm.cpmParameters.basicContainer;
-    HighFrequencyContainer_t& hfc = cpm.cpmParameters.highFrequencyContainer;
+    PerceivedObjectContainer* basic = cpm.cpmParameters.perceivedObjectContainer;
+//    HighFrequencyContainer_t& hfc = cpm.cpmParameters.managementContainer.highFrequencyContainer;
+//    for (int i=0;i<basic->list.count; i++) {
+//        const PerceivedObject *po = basic->list.array[i];
+//        po.stationType = StationType_roadSideUnit;
+//        po.referencePosition.altitude.altitudeValue = AltitudeValue_unavailable;
+//        po.referencePosition.altitude.altitudeConfidence = AltitudeConfidence_unavailable;
+//        const double longitude = mGeoPosition->longitude / vanetza::units::degree;
+//        po.referencePosition.longitude = std::round(longitude * 1e6 * Longitude_oneMicrodegreeEast);
+//        const double latitude = mGeoPosition->latitude / vanetza::units::degree;
+//        po.referencePosition.latitude = std::round(latitude * 1e6 * Latitude_oneMicrodegreeNorth);
+//        po.referencePosition.positionConfidenceEllipse.semiMajorOrientation = HeadingValue_unavailable;
+//        po.referencePosition.positionConfidenceEllipse.semiMajorConfidence = SemiAxisLength_unavailable;
+//        po.referencePosition.positionConfidenceEllipse.semiMinorConfidence = SemiAxisLength_unavailable;
 
-    basic.stationType = StationType_roadSideUnit;
-    basic.referencePosition.altitude.altitudeValue = AltitudeValue_unavailable;
-    basic.referencePosition.altitude.altitudeConfidence = AltitudeConfidence_unavailable;
-    const double longitude = mGeoPosition->longitude / vanetza::units::degree;
-    basic.referencePosition.longitude = std::round(longitude * 1e6 * Longitude_oneMicrodegreeEast);
-    const double latitude = mGeoPosition->latitude / vanetza::units::degree;
-    basic.referencePosition.latitude = std::round(latitude * 1e6 * Latitude_oneMicrodegreeNorth);
-    basic.referencePosition.positionConfidenceEllipse.semiMajorOrientation = HeadingValue_unavailable;
-    basic.referencePosition.positionConfidenceEllipse.semiMajorConfidence = SemiAxisLength_unavailable;
-    basic.referencePosition.positionConfidenceEllipse.semiMinorConfidence = SemiAxisLength_unavailable;
-
-    hfc.present = HighFrequencyContainer_PR_rsuContainerHighFrequency;
-    RSUContainerHighFrequency& rchf = hfc.choice.rsuContainerHighFrequency;
-    if (!mProtectedCommunicationZones.empty()) {
-        rchf.protectedCommunicationZonesRSU = vanetza::asn1::allocate<ProtectedCommunicationZonesRSU_t>();
-        for (const ProtectedCommunicationZone& zone : mProtectedCommunicationZones) {
-            auto asn1 = vanetza::asn1::allocate<ProtectedCommunicationZone_t>();
-            asn1->protectedZoneType = zone.type;
-            asn1->protectedZoneLatitude = std::round(zone.latitude_deg * 1e6 * Latitude_oneMicrodegreeNorth);
-            asn1->protectedZoneLongitude = std::round(zone.longitude_deg * 1e6 * Longitude_oneMicrodegreeEast);
-            if (zone.radius_m > 0) {
-                asn1->protectedZoneRadius = vanetza::asn1::allocate<ProtectedZoneRadius_t>();
-                *asn1->protectedZoneRadius = zone.radius_m;
-            }
-            if (zone.id) {
-                asn1->protectedZoneID = vanetza::asn1::allocate<ProtectedZoneID_t>();
-                *asn1->protectedZoneID = *zone.id;
-            }
-            ASN_SEQUENCE_ADD(rchf.protectedCommunicationZonesRSU, asn1);
-        }
-    }
+//        hfc.present = HighFrequencyContainer_PR_rsuContainerHighFrequency;
+//        RSUContainerHighFrequency &rchf = hfc.choice.rsuContainerHighFrequency;
+//        if (!mProtectedCommunicationZones.empty()) {
+//            rchf.protectedCommunicationZonesRSU = vanetza::asn1::allocate<ProtectedCommunicationZonesRSU_t>();
+//            for (const ProtectedCommunicationZone &zone: mProtectedCommunicationZones) {
+//                auto asn1 = vanetza::asn1::allocate<ProtectedCommunicationZone_t>();
+//                asn1->protectedZoneType = zone.type;
+//                asn1->protectedZoneLatitude = std::round(zone.latitude_deg * 1e6 * Latitude_oneMicrodegreeNorth);
+//                asn1->protectedZoneLongitude = std::round(zone.longitude_deg * 1e6 * Longitude_oneMicrodegreeEast);
+//                if (zone.radius_m > 0) {
+//                    asn1->protectedZoneRadius = vanetza::asn1::allocate<ProtectedZoneRadius_t>();
+//                    *asn1->protectedZoneRadius = zone.radius_m;
+//                }
+//                if (zone.id) {
+//                    asn1->protectedZoneID = vanetza::asn1::allocate<ProtectedZoneID_t>();
+//                    *asn1->protectedZoneID = *zone.id;
+//                }
+//                ASN_SEQUENCE_ADD(rchf.protectedCommunicationZonesRSU, asn1);
+//            }
+//        }
+//    }
 
     std::string error;
     if (!message.validate(error)) {

@@ -186,8 +186,8 @@ namespace artery {
     }
     std::shared_ptr<vanetza::asn1::Cpm> Report::getCpmFromOpaque(const Opaque_t &data) {
         std::shared_ptr<vanetza::asn1::Cpm> cpm = std::make_shared<vanetza::asn1::Cpm>();
-        cam->decode(vanetza::ByteBuffer(data.buf, data.buf + data.size));
-        return cam;
+        cpm->decode(vanetza::ByteBuffer(data.buf, data.buf + data.size));
+        return cpm;
     }
 
     Report::Report(std::string reportId, std::shared_ptr<vanetza::asn1::Cam> cam,
@@ -198,9 +198,9 @@ namespace artery {
         score = 0;
     }
 
-    Report::Report(std::string reportId, std::shared_ptr<vanetza::asn1::Cpm> cam,
+    Report::Report(std::string reportId, std::shared_ptr<vanetza::asn1::Cpm> cpm,
                    const uint64_t &generationTime) : reportId(std::move(reportId)), generationTime(generationTime),
-                                                     reportedMessage(std::move(cam)) {
+                                                     reportedCpmMessage(std::move(cpm)) {
         isValid = false;
         successfullyParsed = false;
         score = 0;
@@ -315,11 +315,11 @@ namespace artery {
                                      (int) strlen(encoded.c_str()));
 
 
-                DetectionReferenceCAM_t &semanticDetectionReferenceCpm = semanticDetection.choice.semanticDetectionReferenceCAM;
-                semanticDetectionReferenceCpm.detectionLevelCAM = detectionType.semantic->detectionLevel;
-                std::string encoded = detectionType.semantic->errorCode.to_string();
-                OCTET_STRING_fromBuf(&semanticDetectionReferenceCpm.semanticDetectionErrorCodeCAM, encoded.c_str(),
-                                     (int) strlen(encoded.c_str()));
+//                DetectionReferenceCAM_t &semanticDetectionReferenceCpm = semanticDetection.choice.semanticDetectionReferenceCAM;
+//                semanticDetectionReferenceCpm.detectionLevelCAM = detectionType.semantic->detectionLevel;
+//                std::string encoded = detectionType.semantic->errorCode.to_string();
+//                OCTET_STRING_fromBuf(&semanticDetectionReferenceCpm.semanticDetectionErrorCodeCAM, encoded.c_str(),
+//                                     (int) strlen(encoded.c_str()));
                 break;
             }
             case detectionTypes::SecurityType:

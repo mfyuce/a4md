@@ -34,7 +34,7 @@ namespace artery {
     }
 
     void CpmService::initialize() {
-        BaseCaService::initialize();
+        BaseCpmService::initialize();
 
         // set vehicle color to green (benign)
         getFacilities().get_const<traci::VehicleController>().getTraCI()->vehicle.setColor(
@@ -54,8 +54,8 @@ namespace artery {
         Enter_Method("indicate");
 
         Asn1PacketVisitor<vanetza::asn1::Cpm> visitor;
-        const vanetza::asn1::Cpm *cam = boost::apply_visitor(visitor, *packet);
-        if (cam && cam->validate()) {
+        const vanetza::asn1::Cpm *cpm = boost::apply_visitor(visitor, *packet);
+        if (cpm && cpm->validate()) {
             CpmObject obj = visitor.shared_wrapper;
             emit(scSignalCpmReceived, &obj);
             mLocalDynamicMap->updateAwareness(obj);
@@ -64,8 +64,8 @@ namespace artery {
 
     void CpmService::sendCpm(const SimTime &T_now) {
         uint16_t genDeltaTimeMod = countTaiMilliseconds(mTimer->getTimeFor(mVehicleDataProvider->updated()));
-        auto cam = createCollectivePErceptionMessage(genDeltaTimeMod);
-        finalizeAndSendCpm(cam, T_now);
+        auto cpm = createCollectivePerceptionMessage(genDeltaTimeMod);
+        finalizeAndSendCpm(cpm, T_now);
     }
 
 } // namespace artery

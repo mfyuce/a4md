@@ -8,7 +8,7 @@
 #include "artery/application/ItsG5BaseService.h"
 #include "artery/application/VehicleDataProvider.h"
 #include <artery/traci/VehicleController.h>
-#include <vanetza/asn1/CPM.hpp>
+#include <vanetza/asn1/cpm.hpp>
 #include <vanetza/units/angle.hpp>
 #include <vanetza/units/velocity.hpp>
 #include <omnetpp.h>
@@ -46,12 +46,10 @@ namespace artery {
 
         omnetpp::SimTime genCpmDcc();
 
-        void finalizeAndSendCpm(vanetza::asn1::CPM cpm,const omnetpp::SimTime &T_now);
+        void finalizeAndSendCpm(vanetza::asn1::Cpm cpm,const omnetpp::SimTime &T_now);
 
-        vanetza::asn1::CPM
-        createCooperativeAwarenessMessage(uint16_t genDeltaTime);
-
-        void addLowFrequencyContainer(vanetza::asn1::CPM &, unsigned pathHistoryLength = 0);
+        vanetza::asn1::Cpm
+        createCollectivePerceptionMessage(uint16_t genDeltaTime);
 
         ChannelNumber mPrimaryChannel = channel::CCH;
         const NetworkInterfaceTable *mNetworkInterfaceTable = nullptr;

@@ -6,7 +6,7 @@
 #include "artery/application/misbehavior/util/HelperFunctions.h"
 #include "artery/utility/simtime_cast.h"
 #include <artery/traci/Cast.h>
-#include <vanetza/facilities/cpm_functions.hpp>
+#include <vanetza/facilities/cam_functions.hpp>
 #include <vanetza/btp/ports.hpp>
 #include <vanetza/dcc/transmission.hpp>
 #include <vanetza/dcc/transmit_rate_control.hpp>
@@ -164,7 +164,6 @@ namespace artery {
         mLastCpmHeading = mVehicleDataProvider->heading();
         mLastCpmTimestamp = T_now;
         if (T_now - mLastLowCpmTimestamp >= artery::simtime_cast(scLowFrequencyContainerInterval)) {
-            addLowFrequencyContainer(cpm, par("pathHistoryLength"));
             mLastLowCpmTimestamp = T_now;
         }
 
@@ -180,7 +179,7 @@ namespace artery {
         CpmObject obj(std::move(cpm));
         emit(scSignalCpmSent, &obj);
 
-        using CpmByteBuffer = convertible::byte_buffer_impl<asn1::CPM>;
+        using CpmByteBuffer = convertible::byte_buffer_impl<asn1::Cpm>;
         std::unique_ptr<geonet::DownPacket> payload{new geonet::DownPacket()};
         std::unique_ptr<convertible::byte_buffer> buffer{new CpmByteBuffer(obj.shared_ptr())};
         payload->layer(OsiLayer::Application) = std::move(buffer);
@@ -188,48 +187,105 @@ namespace artery {
     }
 
     vanetza::asn1::Cpm
-    BaseCpmService::createCollectivePErceptionMessage(uint16_t genDeltaTime) {
-        vanetza::asn1::Cpm message;
+    BaseCpmService::createCollectivePerceptionMessage(uint16_t genDeltaTime) {
+        vanetza::asn1::Cpm cpm;
 
-        ItsPduHeader_t &header = (*message).header;
-        header.protocolVersion = 2;
-        header.messageID = ItsPduHeader__messageID_cpm;
-        header.stationID = mVehicleDataProvider->station_id();
+        auto object = vanetza::asn1::allocate<PerceivedObject_t>(); //this fill the struct PerceivedObject with basic info
+//        auto perception = vanetza::asn1::allocate<CollectivePerceptionMessage>();
 
-        CoopAwareness_t &cpm = (*message).cpm;
-        cpm.generationDeltaTime = genDeltaTime * GenerationDeltaTime_oneMilliSec;
-        BasicContainer_t &basic = cpm.cpmParameters.basicContainer;
-        basic.stationType = StationType_passengerCar;
-        basic.referencePosition = mVehicleDataProvider->approximateReferencePosition();
+        PerceivedObject *arrayobjeto[2];
 
-        HighFrequencyContainer_t &hfc = cpm.cpmParameters.highFrequencyContainer;
-        hfc.present = HighFrequencyContainer_PR_basicVehicleContainerHighFrequency;
-        BasicVehicleContainerHighFrequency &bvc = hfc.choice.basicVehicleContainerHighFrequency;
-        bvc.heading = mVehicleDataProvider->approximateHeading();
-        bvc.speed = mVehicleDataProvider->approximateSpeed();
-        bvc.driveDirection = mVehicleDataProvider->speed().value() >= 0.0 ?
-                             DriveDirection_forward : DriveDirection_backward;
-        bvc.longitudinalAcceleration = mVehicleDataProvider->approximateAcceleration();
-        bvc.curvature.curvatureValue =
-                abs(mVehicleDataProvider->curvature() / vanetza::units::reciprocal_metre) * 10000.0;
-        if (bvc.curvature.curvatureValue >= 1023) {
-            bvc.curvature.curvatureValue = 1023;
+//        cpm->cpm.cpmParameters.perceptionData = vanetza::asn1::allocate<CpmParameters::CpmParameters__perceptionData>();
+
+        cpm->header.protocolVersion=2;
+        cpm->header.messageID=ItsPduHeader__messageID_cpm;
+        cpm->header.stationID=1;
+        cpm->cpm.cpmParameters.managementContainer.stationType=2;
+
+        for(int i=0; i<2;i++) {
+            arrayobjeto[i]=vanetza::asn1::allocate<PerceivedObject>();
+            arrayobjeto[i]->objectID= i+1;
+            arrayobjeto[i]->timeOfMeasurement = TimeOfMeasurement_oneMilliSecond;
+            arrayobjeto[i]->xDistance.value = DistanceValue_oneMeter;
+            arrayobjeto[i]->xDistance.confidence = DistanceConfidence_oneMeter;
+            arrayobjeto[i]->yDistance.value = DistanceValue_oneMeter;
+            arrayobjeto[i]->yDistance.confidence = DistanceConfidence_oneMeter;
+            arrayobjeto[i]->xSpeed.value = SpeedValueExtended_oneCentimeterPerSec;
+            arrayobjeto[i]->xSpeed.confidence = SpeedConfidence_equalOrWithinOneMeterPerSec;
+            arrayobjeto[i]->ySpeed.value = SpeedValueExtended_oneCentimeterPerSec;
+            arrayobjeto[i]->ySpeed.confidence = SpeedConfidence_equalOrWithinOneMeterPerSec;
         }
-        bvc.curvature.curvatureConfidence = CurvatureConfidence_unavailable;
-        bvc.curvatureCalculationMode = CurvatureCalculationMode_yawRateUsed;
-        bvc.yawRate.yawRateValue =
-                round(mVehicleDataProvider->yaw_rate(), degree_per_second) * YawRateValue_degSec_000_01ToLeft * 100.0;
-        if (bvc.yawRate.yawRateValue < -32766 || bvc.yawRate.yawRateValue > 32766) {
-            bvc.yawRate.yawRateValue = YawRateValue_unavailable;
+//        perception->containerId=1;
+//        perception->containerData.present=PerceptionData__containerData_PR_PerceivedObjectContainer;
+//        perception->containerData.choice.PerceivedObjectContainer.numberOfPerceivedObjects=1;
+
+        for(int i=0; i<2;i++) {
+           ASN_SEQUENCE_ADD(&cpm->cpm.cpmParameters.perceivedObjectContainer,arrayobjeto[i]);
         }
-        bvc.vehicleLength.vehicleLengthValue = mVehicleLength;
-        bvc.vehicleLength.vehicleLengthConfidenceIndication =
-                VehicleLengthConfidenceIndication_noTrailerPresent;
-        bvc.vehicleWidth = mVehicleWidth;
+//        EXPECT_EQ(0, ASN_SEQUENCE_ADD(&cpm->cpm.cpmParameters.perceptionData->list, perception));
+//        EXPECT_EQ(1, cpm->cpm.cpmParameters.perceptionData->list.count);
+//        EXPECT_EQ(2, cpm->cpm.cpmParameters.perceptionData->list.array[0]->containerData.choice.PerceivedObjectContainer.perceivedObjects.list.count);
+//        EXPECT_EQ(perception, cpm->cpm.cpmParameters.perceptionData->list.array[0]);
+//        EXPECT_EQ(arrayobjeto[0], cpm->cpm.cpmParameters.perceptionData->list.array[0]->containerData.choice.PerceivedObjectContainer.perceivedObjects.list.array[0]);
+
+
+//        EXPECT_TRUE(cpm.validate());
+//        EXPECT_FALSE(cpm.encode().empty());
+        vanetza::ByteBuffer buffer = cpm.encode();
+        std::cout << "tamaño: " << buffer.size() << "\n";
+        for (const auto byte:buffer){
+            printf("%02x ",byte);
+        }
+
+        auto a = cpm.decode(buffer);
+        std::cout << cpm.size();
+
+
+
+
+
+//        vanetza::asn1::Cpm message;
+//
+//        ItsPduHeader_t &header = (*message).header;
+//        header.protocolVersion = 2;
+//        header.messageID = ItsPduHeader__messageID_cpm;
+//        header.stationID = mVehicleDataProvider->station_id();
+//
+//        CollectivePerceptionMessage_t &cpm = (*message).cpm;
+//        cpm.generationDeltaTime = genDeltaTime * GenerationDeltaTime_oneMilliSec;
+//        PerceivedObjectContainer_t *po = cpm.cpmParameters.perceivedObjectContainer;
+//        po->list = malloc()
+//        basic.stationType = StationType_passengerCar;
+//        basic.referencePosition = mVehicleDataProvider->approximateReferencePosition();
+//
+//        HighFrequencyContainer_t &hfc = cpm.cpmParameters.highFrequencyContainer;
+//        hfc.present = HighFrequencyContainer_PR_basicVehicleContainerHighFrequency;
+//        BasicVehicleContainerHighFrequency &bvc = hfc.choice.basicVehicleContainerHighFrequency;
+//        bvc.heading = mVehicleDataProvider->approximateHeading();
+//        bvc.speed = mVehicleDataProvider->approximateSpeed();
+//        bvc.driveDirection = mVehicleDataProvider->speed().value() >= 0.0 ?
+//                             DriveDirection_forward : DriveDirection_backward;
+//        bvc.longitudinalAcceleration = mVehicleDataProvider->approximateAcceleration();
+//        bvc.curvature.curvatureValue =
+//                abs(mVehicleDataProvider->curvature() / vanetza::units::reciprocal_metre) * 10000.0;
+//        if (bvc.curvature.curvatureValue >= 1023) {
+//            bvc.curvature.curvatureValue = 1023;
+//        }
+//        bvc.curvature.curvatureConfidence = CurvatureConfidence_unavailable;
+//        bvc.curvatureCalculationMode = CurvatureCalculationMode_yawRateUsed;
+//        bvc.yawRate.yawRateValue =
+//                round(mVehicleDataProvider->yaw_rate(), degree_per_second) * YawRateValue_degSec_000_01ToLeft * 100.0;
+//        if (bvc.yawRate.yawRateValue < -32766 || bvc.yawRate.yawRateValue > 32766) {
+//            bvc.yawRate.yawRateValue = YawRateValue_unavailable;
+//        }
+//        bvc.vehicleLength.vehicleLengthValue = mVehicleLength;
+//        bvc.vehicleLength.vehicleLengthConfidenceIndication =
+//                VehicleLengthConfidenceIndication_noTrailerPresent;
+//        bvc.vehicleWidth = mVehicleWidth;
 
         std::string error;
-        if (!message.validate(error)) {
-            throw cRuntimeError("Invalid High Frequency CPM: %s", error.c_str());
+        if (!cpm.validate(error)) {
+            throw cRuntimeError("Invalid High Frequency Cpm: %s", error.c_str());
         }
 
 //        const vanetza::units::Duration delta{
@@ -240,38 +296,7 @@ namespace artery {
 //            std::cout << "hi" << std::endl;
 //        }
 
-        return message;
-    }
-
-    void BaseCpmService::addLowFrequencyContainer(vanetza::asn1::CPM &message, unsigned pathHistoryLength) {
-        if (pathHistoryLength > 40) {
-            EV_WARN << "path history can contain 40 elements at maximum";
-            pathHistoryLength = 40;
-        }
-
-        LowFrequencyContainer_t *&lfc = message->cpm.cpmParameters.lowFrequencyContainer;
-        lfc = vanetza::asn1::allocate<LowFrequencyContainer_t>();
-        lfc->present = LowFrequencyContainer_PR_basicVehicleContainerLowFrequency;
-        BasicVehicleContainerLowFrequency &bvc = lfc->choice.basicVehicleContainerLowFrequency;
-        bvc.vehicleRole = VehicleRole_default;
-        bvc.exteriorLights.buf = static_cast<uint8_t *>(vanetza::asn1::allocate(1));
-        assert(nullptr != bvc.exteriorLights.buf);
-        bvc.exteriorLights.size = 1;
-        bvc.exteriorLights.buf[0] |= 1 << (7 - ExteriorLights_daytimeRunningLightsOn);
-        for (unsigned i = 0; i < pathHistoryLength; ++i) {
-            auto *pathPoint = vanetza::asn1::allocate<PathPoint>();
-            pathPoint->pathDeltaTime = vanetza::asn1::allocate<PathDeltaTime_t>();
-            *(pathPoint->pathDeltaTime) = 0;
-            pathPoint->pathPosition.deltaLatitude = DeltaLatitude_unavailable;
-            pathPoint->pathPosition.deltaLongitude = DeltaLongitude_unavailable;
-            pathPoint->pathPosition.deltaAltitude = DeltaAltitude_unavailable;
-            ASN_SEQUENCE_ADD(&bvc.pathHistory, pathPoint);
-        }
-
-        std::string error;
-        if (!message.validate(error)) {
-            throw cRuntimeError("Invalid Low Frequency CPM: %s", error.c_str());
-        }
+        return cpm;
     }
 
 } // namespace artery

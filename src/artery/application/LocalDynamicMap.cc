@@ -36,12 +36,43 @@ void LocalDynamicMap::updateAwareness(const CaObject& obj)
     }
 }
 
+void LocalDynamicMap::updateAwareness(const CpmObject& obj)
+{
+    const vanetza::asn1::Cpm& msg = obj.asn1();
+
+    static const omnetpp::SimTime lifetime { 1100, omnetpp::SIMTIME_MS };
+    auto tai = mTimer.reconstructMilliseconds(msg->cpm.generationDeltaTime);
+    const omnetpp::SimTime expiry = mTimer.getTimeFor(tai) + lifetime;
+
+    const auto now = omnetpp::simTime();
+    if (expiry < now || expiry > now + 2 * lifetime) {
+        EV_STATICCONTEXT
+        EV_WARN << "Expiry of received CPM is out of bounds";
+        return;
+    }
+
+    AwarenessCpmEntry entry(obj, expiry);
+    auto found = mCpmMessages.find(msg->header.stationID);
+    if (found != mCpmMessages.end()) {
+        found->second = std::move(entry);
+    } else {
+        mCpmMessages.emplace(msg->header.stationID, std::move(entry));
+    }
+}
+
 void LocalDynamicMap::dropExpired()
 {
     const auto now = omnetpp::simTime();
     for (auto it = mCaMessages.begin(); it != mCaMessages.end();) {
         if (it->second.expiry < now) {
             it = mCaMessages.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (auto it = mCpmMessages.begin(); it != mCpmMessages.end();) {
+        if (it->second.expiry < now) {
+            it = mCpmMessages.erase(it);
         } else {
             ++it;
         }
@@ -57,9 +88,21 @@ unsigned LocalDynamicMap::count(const CamPredicate& predicate) const
             });
 }
 
+unsigned LocalDynamicMap::countCpm(const CpmPredicate& predicate) const
+{
+    return std::count_if(mCpmMessages.begin(), mCpmMessages.end(),
+                         [&predicate](const std::pair<const StationID, AwarenessCpmEntry>& map_entry) {
+                             const Cpm& cpm = map_entry.second.object.asn1();
+                             return predicate(cpm);
+                         });
+}
 LocalDynamicMap::AwarenessEntry::AwarenessEntry(const CaObject& obj, omnetpp::SimTime t) :
     expiry(t), object(obj)
 {
 }
 
+LocalDynamicMap::AwarenessCpmEntry::AwarenessCpmEntry(const CpmObject& obj, omnetpp::SimTime t) :
+        expiry(t), object(obj)
+{
+}
 } // namespace artery

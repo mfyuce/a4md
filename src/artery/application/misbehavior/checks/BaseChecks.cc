@@ -53,6 +53,72 @@ namespace artery {
     BaseChecks::BaseChecks(std::shared_ptr<const traci::API> traciAPI,
                            GlobalEnvironmentModel *globalEnvironmentModel,
                            DetectionParameters *detectionParameters,
+                           const Timer *timer,
+                           std::map<detectionLevels::DetectionLevels, bool> checkableDetectionLevels,
+                           const std::shared_ptr<vanetza::asn1::Cpm> &message) :
+            detectionParameters(detectionParameters),
+            mCheckableDetectionLevels(std::move(checkableDetectionLevels)) {
+        if (!staticInitializationComplete) {
+            staticInitializationComplete = true;
+            mGlobalEnvironmentModel = globalEnvironmentModel;
+            mTraciAPI = std::move(traciAPI);
+            mSimulationBoundary = traci::Boundary{mTraciAPI->simulation.getNetBoundary()};
+            mTimer = timer;
+        }
+        Position position = convertReferencePosition(
+                (*message)->cpm.cpmParameters.managementContainer.referencePosition, mSimulationBoundary, mTraciAPI);
+        double speed =
+                (double) (*message)->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer.speed.speedValue /
+                100.0;
+        double heading =
+                (double) (*message)->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer.heading.headingValue /
+                10.0;
+        Position speedVector = getVector(speed, heading);
+        kalmanSVI = new Kalman_SVI();
+        kalmanSVSI = new Kalman_SC();
+        kalmanSI = new Kalman_SI();
+        kalmanVI = new Kalman_SI();
+        kalmanSVI->setInitial(position.x.value(), position.y.value(), speedVector.x.value(), speedVector.y.value());
+        kalmanSVSI->setInitial(0, speed);
+        kalmanSI->setInitial(position.x.value(), position.y.value());
+        kalmanVI->setInitial(speedVector.x.value(), speedVector.y.value());
+    }
+    BaseChecks::BaseChecks(std::shared_ptr<const traci::API> traciAPI,
+                           GlobalEnvironmentModel *globalEnvironmentModel,
+                           DetectionParameters *detectionParameters,
+                           const Timer *timer,
+                           std::map<detectionLevels::DetectionLevels, bool> checkableDetectionLevels,
+                           const std::shared_ptr<vanetza::asn1::Cpm> &message) :
+            detectionParameters(detectionParameters),
+            mCheckableDetectionLevels(std::move(checkableDetectionLevels)) {
+        if (!staticInitializationComplete) {
+            staticInitializationComplete = true;
+            mGlobalEnvironmentModel = globalEnvironmentModel;
+            mTraciAPI = std::move(traciAPI);
+            mSimulationBoundary = traci::Boundary{mTraciAPI->simulation.getNetBoundary()};
+            mTimer = timer;
+        }
+        Position position = convertReferencePosition(
+                (*message)->cpm.cpmParameters.basicContainer.referencePosition, mSimulationBoundary, mTraciAPI);
+        double speed =
+                (double) (*message)->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedValue /
+                100.0;
+        double heading =
+                (double) (*message)->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.heading.headingValue /
+                10.0;
+        Position speedVector = getVector(speed, heading);
+        kalmanSVI = new Kalman_SVI();
+        kalmanSVSI = new Kalman_SC();
+        kalmanSI = new Kalman_SI();
+        kalmanVI = new Kalman_SI();
+        kalmanSVI->setInitial(position.x.value(), position.y.value(), speedVector.x.value(), speedVector.y.value());
+        kalmanSVSI->setInitial(0, speed);
+        kalmanSI->setInitial(position.x.value(), position.y.value());
+        kalmanVI->setInitial(speedVector.x.value(), speedVector.y.value());
+    }
+    BaseChecks::BaseChecks(std::shared_ptr<const traci::API> traciAPI,
+                           GlobalEnvironmentModel *globalEnvironmentModel,
+                           DetectionParameters *detectionParameters,
                            const Timer *timer) :
             detectionParameters(detectionParameters) {
         if (!staticInitializationComplete) {
@@ -88,6 +154,29 @@ namespace artery {
         kalmanVI->setInitial(speedVector.x.value(), speedVector.y.value());
     }
 
+    void BaseChecks::initializeKalmanFilters(const std::shared_ptr<vanetza::asn1::Cpm> &message) {
+        Position position = convertReferencePosition(
+                (*message)->cpm.cpmParameters.basicContainer.referencePosition, mSimulationBoundary, mTraciAPI);
+        double speed =
+                (double) (*message)->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.speed.speedValue /
+                100.0;
+        double heading =
+                (double) (*message)->cpm.cpmParameters.highFrequencyContainer.choice.basicVehicleContainerHighFrequency.heading.headingValue /
+                10.0;
+        Position speedVector = getVector(speed, heading);
+        delete kalmanSVI;
+        delete kalmanSVSI;
+        delete kalmanSI;
+        delete kalmanVI;
+        kalmanSVI = new Kalman_SVI();
+        kalmanSVSI = new Kalman_SC();
+        kalmanSI = new Kalman_SI();
+        kalmanVI = new Kalman_SI();
+        kalmanSVI->setInitial(position.x.value(), position.y.value(), speedVector.x.value(), speedVector.y.value());
+        kalmanSVSI->setInitial(0, speed);
+        kalmanSI->setInitial(position.x.value(), position.y.value());
+        kalmanVI->setInitial(speedVector.x.value(), speedVector.y.value());
+    }
     double BaseChecks::FrequencyCheck(const double &deltaTime) const {
         if (deltaTime > detectionParameters->maxCamFrequency * 1000) {
             return 0;
@@ -96,6 +185,13 @@ namespace artery {
         }
     }
 
+    double BaseChecks::FrequencyCheckCpm(const double &deltaTime) const {
+        if (deltaTime > detectionParameters->maxCpmFrequency * 1000) {
+            return 0;
+        } else {
+            return 1;
+        }
+    }
     void BaseChecks::KalmanPositionSpeedConsistencyCheck(const Position &currentPosition,
                                                          const PosConfidenceEllipse_t &currentPositionConfidence,
                                                          const Position &currentSpeed,
@@ -286,6 +382,68 @@ namespace artery {
                 KalmanSpeedConsistencyCheck(currentCamSpeedVector, lastCamSpeedVector, currentCamSpeedConfidence,
                                             currentCamAccelerationVector,
                                             camDeltaTime);
+    }
+    void BaseChecks::KalmanChecks(const Position &currentCpmPosition,
+                                  const PosConfidenceEllipse_t &currentCpmPositionConfidence,
+                                  const double &currentCpmSpeed,
+                                  const Position &currentCpmSpeedVector, const double &currentCpmSpeedConfidence,
+                                  const double &currentCpmAcceleration, const Position &currentCpmAccelerationVector,
+                                  const double &currentCpmHeading, const Position &lastCpmPosition,
+                                  const Position &lastCpmSpeedVector, const double &cpmDeltaTime,
+                                  CheckResult &result) {
+        double returnValue[2];
+        KalmanPositionSpeedConsistencyCheck(currentCpmPosition, currentCpmPositionConfidence, currentCpmSpeedVector,
+                                            currentCpmAccelerationVector,
+                                            currentCpmSpeedConfidence, cpmDeltaTime, returnValue);
+        result.kalmanPositionSpeedConsistencyPosition = returnValue[0];
+        result.kalmanPositionSpeedConsistencySpeed = returnValue[1];
+        KalmanPositionSpeedScalarConsistencyCheck(currentCpmPosition, lastCpmPosition, currentCpmPositionConfidence,
+                                                  currentCpmSpeed, currentCpmAcceleration,
+                                                  currentCpmSpeedConfidence, cpmDeltaTime, returnValue);
+        result.kalmanPositionSpeedScalarConsistencyPosition = returnValue[0];
+        result.kalmanPositionSpeedScalarConsistencySpeed = returnValue[1];
+        result.kalmanPositionConsistencyConfidence =
+                KalmanPositionConsistencyCheck(currentCpmPosition, lastCpmPosition, currentCpmPositionConfidence,
+                                               cpmDeltaTime);
+        result.kalmanPositionAccelerationConsistencySpeed =
+                KalmanPositionAccConsistencyCheck(currentCpmPosition, currentCpmSpeedVector,
+                                                  currentCpmPositionConfidence,
+                                                  cpmDeltaTime);
+        result.kalmanSpeedConsistencyConfidence =
+                KalmanSpeedConsistencyCheck(currentCpmSpeedVector, lastCpmSpeedVector, currentCpmSpeedConfidence,
+                                            currentCpmAccelerationVector,
+                                            cpmDeltaTime);
+    }
+    void BaseChecks::KalmanChecksCpm(const Position &currentCpmPosition,
+                                  const PosConfidenceEllipse_t &currentCpmPositionConfidence,
+                                  const double &currentCpmSpeed,
+                                  const Position &currentCpmSpeedVector, const double &currentCpmSpeedConfidence,
+                                  const double &currentCpmAcceleration, const Position &currentCpmAccelerationVector,
+                                  const double &currentCpmHeading, const Position &lastCpmPosition,
+                                  const Position &lastCpmSpeedVector, const double &cpmDeltaTime,
+                                  CheckResult &result) {
+        double returnValue[2];
+        KalmanPositionSpeedConsistencyCheck(currentCpmPosition, currentCpmPositionConfidence, currentCpmSpeedVector,
+                                            currentCpmAccelerationVector,
+                                            currentCpmSpeedConfidence, cpmDeltaTime, returnValue);
+        result.kalmanPositionSpeedConsistencyPosition = returnValue[0];
+        result.kalmanPositionSpeedConsistencySpeed = returnValue[1];
+        KalmanPositionSpeedScalarConsistencyCheck(currentCpmPosition, lastCpmPosition, currentCpmPositionConfidence,
+                                                  currentCpmSpeed, currentCpmAcceleration,
+                                                  currentCpmSpeedConfidence, cpmDeltaTime, returnValue);
+        result.kalmanPositionSpeedScalarConsistencyPosition = returnValue[0];
+        result.kalmanPositionSpeedScalarConsistencySpeed = returnValue[1];
+        result.kalmanPositionConsistencyConfidence =
+                KalmanPositionConsistencyCheck(currentCpmPosition, lastCpmPosition, currentCpmPositionConfidence,
+                                               cpmDeltaTime);
+        result.kalmanPositionAccelerationConsistencySpeed =
+                KalmanPositionAccConsistencyCheck(currentCpmPosition, currentCpmSpeedVector,
+                                                  currentCpmPositionConfidence,
+                                                  cpmDeltaTime);
+        result.kalmanSpeedConsistencyConfidence =
+                KalmanSpeedConsistencyCheck(currentCpmSpeedVector, lastCpmSpeedVector, currentCpmSpeedConfidence,
+                                            currentCpmAccelerationVector,
+                                            cpmDeltaTime);
     }
 
 } // namespace artery

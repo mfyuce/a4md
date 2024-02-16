@@ -6,6 +6,7 @@
 #define ARTERY_BASECHECKS_H
 
 #include <vanetza/asn1/cam.hpp>
+#include <vanetza/asn1/cpm.hpp>
 #include <omnetpp.h>
 #include <artery/application/misbehavior/checks/CheckResult.h>
 #include <artery/application/misbehavior/checks/kalman/Kalman_SVI.h>
@@ -32,13 +33,17 @@ namespace artery {
                    DetectionParameters *detectionParameters, const Timer *timer,
                    std::map<detectionLevels::DetectionLevels, bool> checkableDetectionLevels,
                    const std::shared_ptr<vanetza::asn1::Cam> &message);
-
+        BaseChecks(std::shared_ptr<const traci::API> traciAPI, GlobalEnvironmentModel *globalEnvironmentModel,
+                   DetectionParameters *detectionParameters, const Timer *timer,
+                   std::map<detectionLevels::DetectionLevels, bool> checkableDetectionLevels,
+                   const std::shared_ptr<vanetza::asn1::Cpm> &message);
         BaseChecks(std::shared_ptr<const traci::API> traciAPI, GlobalEnvironmentModel *globalEnvironmentModel,
                    DetectionParameters *detectionParameters, const Timer *timer);
 
         virtual ~BaseChecks() {};
 
         void initializeKalmanFilters(const std::shared_ptr<vanetza::asn1::Cam> &message);
+        void initializeKalmanFilters(const std::shared_ptr<vanetza::asn1::Cpm> &message);
 
         virtual std::shared_ptr<CheckResult> checkCAM(const VehicleDataProvider *receiverVDP,
                                                       const std::vector<Position> &receiverVehicleOutline,
@@ -46,17 +51,32 @@ namespace artery {
                                                       const std::shared_ptr<vanetza::asn1::Cam> &lastCam,
                                                       const std::vector<std::shared_ptr<vanetza::asn1::Cam>> &surroundingCamObjects) = 0;
 
+        virtual std::shared_ptr<CheckResult> checkCPM(const VehicleDataProvider *receiverVDP,
+                                                      const std::vector<Position> &receiverVehicleOutline,
+                                                      const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm,
+                                                      const std::shared_ptr<vanetza::asn1::Cpm> &lastCpm,
+                                                      const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &surroundingCpmObjects) = 0;
+
         virtual std::bitset<16> checkSemanticLevel1Report(const std::shared_ptr<vanetza::asn1::Cam> &currentCam) = 0;
+        virtual std::bitset<16> checkSemanticLevel1Report(const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm) = 0;
 
         virtual std::bitset<16> checkSemanticLevel2Report(const std::shared_ptr<vanetza::asn1::Cam> &currentCam,
                                                           const std::shared_ptr<vanetza::asn1::Cam> &lastCam) = 0;
+        virtual std::bitset<16> checkSemanticLevel2Report(const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm,
+                                                          const std::shared_ptr<vanetza::asn1::Cpm> &lastCpm) = 0;
 
         virtual std::bitset<16> checkSemanticLevel3Report(const std::shared_ptr<vanetza::asn1::Cam> &currentCam,
                                                           const std::vector<std::shared_ptr<vanetza::asn1::Cam>> &neighbourCams) = 0;
+        virtual std::bitset<16> checkSemanticLevel3Report(const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm,
+                                                          const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &neighbourCpms) = 0;
 
         virtual std::bitset<16>
         checkSemanticLevel4Report(const std::shared_ptr<vanetza::asn1::Cam> &currentCam,
                                   const std::vector<std::shared_ptr<vanetza::asn1::Cam>> &neighbourCams,
+                                  const SenderInfoContainer_t &senderInfo) = 0;
+        virtual std::bitset<16>
+        checkSemanticLevel4Report(const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm,
+                                  const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &neighbourCpms,
                                   const SenderInfoContainer_t &senderInfo) = 0;
 
 
@@ -85,8 +105,18 @@ namespace artery {
         bool mCheckingFirstCam = true;
 
 
-        double FrequencyCheck(const double &deltaTime) const;
+        Position mLastCpmPosition;
+        PosConfidenceEllipse_t mLastCpmPositionConfidence;
+        std::vector<Position> mLastCpmPositionEllipse;
+        double mLastCpmEllipseRadius;
+        double mLastCpmSpeed;
+        double mLastCpmSpeedConfidence;
+        Position mLastCpmSpeedVector;
+        bool mCheckingFirstCpm = true;
 
+
+        double FrequencyCheck(const double &deltaTime) const;
+        double FrequencyCheckCpm(const double &deltaTime) const;
         void KalmanChecks(const Position &currentCamPosition,
                           const PosConfidenceEllipse_t &currentCamPositionConfidence,
                           const double &currentCamSpeed,
@@ -94,6 +124,14 @@ namespace artery {
                           const double &currentCamAcceleration, const Position &currentCamAccelerationVector,
                           const double &currentCamHeading, const Position &lastCamPosition,
                           const Position &lastCamSpeedVector, const double &camDeltaTime,
+                          CheckResult &result);
+        void KalmanChecksCpm(const Position &currentCpmPosition,
+                          const PosConfidenceEllipse_t &currentCpmPositionConfidence,
+                          const double &currentCpmSpeed,
+                          const Position &currentCpmSpeedVector, const double &currentCpmSpeedConfidence,
+                          const double &currentCpmAcceleration, const Position &currentCpmAccelerationVector,
+                          const double &currentCpmHeading, const Position &lastCpmPosition,
+                          const Position &lastCpmSpeedVector, const double &camDeltaTime,
                           CheckResult &result);
 
 

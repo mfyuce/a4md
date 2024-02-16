@@ -32,9 +32,32 @@ namespace artery {
         }
     }
 
+    DetectedSender::DetectedSender(const std::shared_ptr<const traci::API> &traciAPI,
+                                   GlobalEnvironmentModel *globalEnvironmentModel,
+                                   DetectionParameters *detectionParameters,
+                                   const Timer *timer,
+                                   const std::shared_ptr<vanetza::asn1::Cpm> &message,
+                                   const std::map<detectionLevels::DetectionLevels, bool> &checkableDetectionLevels) {
+        mStationId = (*message)->header.stationID;
+        mHasBeenReported = false;
+        mOmittedReportsPerErrorCode = std::vector<int>(16);
+        mOmittedReportsCumulated = 0;
+        mCpmsArraySize = detectionParameters->detectedSenderCpmArrayMaxSize;
+        latestCpm = nullptr;
+        switch (detectionParameters->checkType) {
+            case checkTypes::LegacyChecks:
+                baseChecks = new LegacyChecks(traciAPI, globalEnvironmentModel, detectionParameters, timer,
+                                              checkableDetectionLevels, message);
+                break;
+            case checkTypes::CatchChecks:
+                baseChecks = new CatchChecks(traciAPI, globalEnvironmentModel, detectionParameters, timer,
+                                             checkableDetectionLevels, message);
+        }
+    }
 
     DetectedSender::~DetectedSender() {
         camList.clear();
+        cpmList.clear();
         delete baseChecks;
     }
 
@@ -61,6 +84,26 @@ namespace artery {
     }
 
 
+    std::shared_ptr<CheckResult>
+    DetectedSender::addAndCheckCpm(const std::shared_ptr<vanetza::asn1::Cpm> &message,
+                                   const VehicleDataProvider *receiverVDP,
+                                   const std::vector<Position> &receiverVehicleOutline,
+                                   const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &surroundingCpmObjects) {
+        std::shared_ptr<CheckResult> result;
+        if (latestCpm != nullptr) {
+            result = baseChecks->checkCPM(receiverVDP, receiverVehicleOutline, message,
+                                          latestCpm, surroundingCpmObjects);
+        } else {
+            result = baseChecks->checkCPM(receiverVDP, receiverVehicleOutline, message, nullptr,
+                                          surroundingCpmObjects);
+        }
+        cpmList.emplace_back(message);
+        latestCpm = message;
+        if (cpmList.size() > mCpmsArraySize) {
+            cpmList.pop_front();
+        }
+        return result;
+    }
     bool DetectedSender::checkOmittedReportsLimit(const bitset<16> &reportedErrorCodes) {
         if (!mHasBeenReported) {
             return true;

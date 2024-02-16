@@ -77,6 +77,7 @@ add_library(core SHARED
         application/misbehavior/MisbehaviorCaService.cc
         application/misbehavior/MisbehaviorCpmService.cc
         application/misbehavior/authority/MisbehaviorAuthority.cc
+        application/misbehavior/authority/MisbehaviorAuthorityCpm.cc
         application/misbehavior/authority/MisbehavingPseudonym.cc
         application/misbehavior/authority/MisbehavingVehicle.cc
         application/misbehavior/checks/LegacyChecks.cc
@@ -92,6 +93,7 @@ add_library(core SHARED
         application/misbehavior/checks/kalman/MatrixOp_SI.cc
         application/misbehavior/checks/kalman/MatrixOp_SVI.cc
         application/misbehavior/detection/MisbehaviorDetectionService.cc
+        application/misbehavior/detection/MisbehaviorDetectionServiceCpm.cc
         application/misbehavior/detection/DetectedSender.cc
         application/misbehavior/fusion/ThresholdFusion.cc
         application/misbehavior/report/Report.cc

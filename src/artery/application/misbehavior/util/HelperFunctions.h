@@ -14,6 +14,7 @@
 #include "vanetza/asn1/its/ReferencePosition.h"
 #include "traci/API.h"
 #include "traci/Boundary.h"
+#include "vanetza/asn1/cpm.hpp"
 
 namespace artery {
 
@@ -34,6 +35,8 @@ namespace artery {
     getVehicleOutline(const Position &position, const Angle &heading, const double &length, const double &width);
 
     std::vector<Position> getVehicleOutline(const vanetza::asn1::Cam &cam, const traci::Boundary &simulationBoundary,
+                                            const std::shared_ptr<const traci::API> &traciAPI);
+    std::vector<Position> getVehicleOutline(const vanetza::asn1::Cpm &cpm, const traci::Boundary &simulationBoundary,
                                             const std::shared_ptr<const traci::API> &traciAPI);
 
     double getDistanceToNearestRoad(GlobalEnvironmentModel *globalEnvMod, const Position &position);
@@ -95,10 +98,13 @@ namespace artery {
                                const std::shared_ptr<const traci::API> &traciAPI, omnetpp::cRNG *rng);
 
     bool camComp(const vanetza::asn1::Cam &message1, const vanetza::asn1::Cam &message2);
+    bool cpmComp(const vanetza::asn1::Cpm &message1, const vanetza::asn1::Cpm &message2);
 
     bool camCompPtr(const std::shared_ptr<vanetza::asn1::Cam> &ptr1, const std::shared_ptr<vanetza::asn1::Cam> &ptr2);
+    bool cpmCompPtr(const std::shared_ptr<vanetza::asn1::Cpm> &ptr1, const std::shared_ptr<vanetza::asn1::Cpm> &ptr2);
 
     bool camEquiv(const vanetza::asn1::Cam &message1, const vanetza::asn1::Cam &message2);
+    bool cpmEquiv(const vanetza::asn1::Cpm &message1, const vanetza::asn1::Cpm &message2);
 
     struct CamCompare {
         bool operator()(const std::shared_ptr<vanetza::asn1::Cam> &ptr1,
@@ -107,6 +113,12 @@ namespace artery {
         }
     };
 
+    struct CpmCompare {
+        bool operator()(const std::shared_ptr<vanetza::asn1::Cpm> &ptr1,
+                        const std::shared_ptr<vanetza::asn1::Cpm> &ptr2) {
+            return cpmCompPtr(ptr1, ptr2);
+        }
+    };
     double normalizeValue(double value, double min, double max);
 
     std::vector<std::string> split(const std::string &s, char delimiter);

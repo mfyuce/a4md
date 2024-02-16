@@ -56,6 +56,36 @@ namespace artery {
         return 1;
     }
 
+
+    double LegacyChecks::ProximityPlausibilityCheck(const Position &senderPosition, const Position &receiverPosition,
+                                                    const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &surroundingCpmObjects,
+                                                    const StationID_t &senderStationId) {
+        Position::value_type deltaDistance = distance(senderPosition, receiverPosition);
+        double deltaAngle = calculateHeadingAngle(
+                Position(senderPosition.x - receiverPosition.x, senderPosition.y - receiverPosition.y));
+        if (deltaDistance.value() < detectionParameters->maxProximityRangeL) {
+            if (deltaDistance.value() < detectionParameters->maxProximityRangeW * 2 ||
+                (deltaAngle < 90 && deltaDistance.value() <
+                                    (detectionParameters->maxProximityRangeW / cos((90 - deltaAngle) * PI / 180)))) {
+                Position::value_type minimumDistance = Position::value_type::from_value(9999);
+
+                for (const auto &cpm: surroundingCpmObjects) {
+                    if ((*cpm)->header.stationID != senderStationId) {
+                        Position::value_type currentDistance = distance(senderPosition, convertReferencePosition(
+                                (*cpm)->cpm.cpmParameters.managementContainer.referencePosition, mSimulationBoundary,
+                                mTraciAPI));
+                        minimumDistance = std::min(currentDistance, minimumDistance);
+                    }
+                }
+                if (minimumDistance.value() < detectionParameters->maxProximityDistance) {
+                    return 1;
+                } else {
+                    return 0;
+                }
+            }
+        }
+        return 1;
+    }
     double
     LegacyChecks::RangePlausibilityCheck(const Position &senderPosition, const Position &receiverPosition) const {
         if (distance(senderPosition, receiverPosition).value() < detectionParameters->maxPlausibleRange) {
@@ -169,6 +199,17 @@ namespace artery {
         }
         return IntersectionCheck(senderOutline, relevantCams);
     }
+    double LegacyChecks::IntersectionCheck(const std::vector<Position> &receiverVehicleOutline,
+                                           const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &relevantCpms,
+                                           const Position &senderPosition, const double &senderLength,
+                                           const double &senderWidth, const double &senderHeading) {
+        std::vector<Position> senderOutline = getVehicleOutline(senderPosition, Angle::from_degree(senderHeading),
+                                                                senderLength, senderWidth);
+        if (boost::geometry::intersects(senderOutline, receiverVehicleOutline)) {
+            return 0;
+        }
+        return IntersectionCheck(senderOutline, relevantCpms);
+    }
 
     double LegacyChecks::IntersectionCheck(const std::vector<Position> &senderVehicleOutline,
                                            const std::vector<std::shared_ptr<vanetza::asn1::Cam>> &relevantCams) {
@@ -179,6 +220,20 @@ namespace artery {
             double iFactor = intersectionFactor(senderVehicleOutline, outline);
             double factor = iFactor *
                             ((detectionParameters->maxIntersectionDeltaTime - camDeltaTime) /
+                             detectionParameters->maxIntersectionDeltaTime);
+            return factor > 0.5 ? 0 : 1;
+        }
+        return 1;
+    }
+    double LegacyChecks::IntersectionCheck(const std::vector<Position> &senderVehicleOutline,
+                                           const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &relevantCpms) {
+        for (const auto &currentCpm: relevantCpms) {
+            auto cpmDeltaTime = ((double) (uint16_t) ((uint16_t) countTaiMilliseconds(mTimer->getTimeFor(simTime())) -
+                                                      (*currentCpm)->cpm.generationDeltaTime)) / 1000;
+            std::vector<Position> outline = getVehicleOutline((*currentCpm), mSimulationBoundary, mTraciAPI);
+            double iFactor = intersectionFactor(senderVehicleOutline, outline);
+            double factor = iFactor *
+                            ((detectionParameters->maxIntersectionDeltaTime - cpmDeltaTime) /
                              detectionParameters->maxIntersectionDeltaTime);
             return factor > 0.5 ? 0 : 1;
         }
@@ -271,6 +326,84 @@ namespace artery {
         return std::make_shared<CheckResult>(result);
     }
 
+    std::shared_ptr<CheckResult> LegacyChecks::checkCPM(const VehicleDataProvider *receiverVDP,
+                                                        const std::vector<Position> &receiverVehicleOutline,
+                                                        const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm,
+                                                        const std::shared_ptr<vanetza::asn1::Cpm> &lastCpm,
+                                                        const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &surroundingCpmObjects) {
+        const Position &receiverPosition = convertReferencePosition(receiverVDP->approximateReferencePosition(),
+                                                                    mSimulationBoundary, mTraciAPI);
+
+        Position currentCpmPosition = convertReferencePosition(
+                (*currentCpm)->cpm.cpmParameters.managementContainer.referencePosition, mSimulationBoundary, mTraciAPI);
+        PosConfidenceEllipse_t currentCpmPositionConfidence =
+                (*currentCpm)->cpm.cpmParameters.managementContainer.referencePosition.positionConfidenceEllipse;
+
+        auto currentHfc =
+                (*currentCpm)->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer;
+        double currentCpmSpeed = (double) currentHfc.speed.speedValue / 100.0;
+        double currentCpmSpeedConfidence = (double) currentHfc.speed.speedConfidence / 100.0;
+        double currentCpmAcceleration =
+                (double) currentHfc.longitudinalAcceleration->longitudinalAccelerationValue / 10.0;
+        double currentCpmHeading = (double) currentHfc.heading.headingValue / 10;
+        double currentCpmVehicleLength = (double) currentHfc.vehicleLength->vehicleLengthValue / 10;
+        double currentCpmVehicleWidth = (double) (long)currentHfc.vehicleWidth / 10;
+        Position currentCpmSpeedVector = getVector(currentCpmSpeed, currentCpmHeading);
+        Position currentCpmAccelerationVector = getVector(currentCpmAcceleration, currentCpmHeading);
+
+        CheckResult result;
+
+        if (mCheckableDetectionLevels[detectionLevels::Level1]) {
+            result.speedPlausibility = SpeedPlausibilityCheck(currentCpmSpeed);
+        }
+        if (mCheckableDetectionLevels[detectionLevels::Level2] && !mCheckingFirstCpm) {
+            auto cpmDeltaTime = (double) (uint16_t) ((*currentCpm)->cpm.generationDeltaTime -
+                                                     (*lastCpm)->cpm.generationDeltaTime);
+            result.positionConsistency = PositionConsistencyCheck(currentCpmPosition, mLastCpmPosition, cpmDeltaTime);
+            result.speedConsistency = SpeedConsistencyCheck(currentCpmSpeed, mLastCpmSpeed, cpmDeltaTime);
+            result.positionSpeedConsistency =
+                    PositionSpeedConsistencyCheck(currentCpmPosition, mLastCpmPosition, currentCpmSpeed, mLastCpmSpeed,
+                                                  cpmDeltaTime);
+            result.positionSpeedMaxConsistency =
+                    PositionSpeedMaxConsistencyCheck(currentCpmPosition, mLastCpmPosition, currentCpmSpeed,
+                                                     mLastCpmSpeed,
+                                                     cpmDeltaTime);
+            result.positionHeadingConsistency =
+                    PositionHeadingConsistencyCheck(currentCpmHeading, currentCpmPosition, mLastCpmPosition,
+                                                    cpmDeltaTime, currentCpmSpeed);
+            KalmanChecks(currentCpmPosition, currentCpmPositionConfidence, currentCpmSpeed,
+                         currentCpmSpeedVector, currentCpmSpeedConfidence, currentCpmAcceleration,
+                         currentCpmAccelerationVector, currentCpmHeading, mLastCpmPosition,
+                         mLastCpmSpeedVector, cpmDeltaTime, result);
+            result.frequency = BaseChecks::FrequencyCheck(cpmDeltaTime);
+        }
+        if (mCheckableDetectionLevels[detectionLevels::Level3]) {
+            std::vector<Position> currentCpmOutline = getVehicleOutline(currentCpmPosition,
+                                                                        Angle::from_degree(currentCpmHeading),
+                                                                        currentCpmVehicleLength,
+                                                                        currentCpmVehicleWidth);
+            result.positionPlausibility = PositionPlausibilityCheck(currentCpmPosition, currentCpmSpeed);
+            result.intersection =
+                    IntersectionCheck(receiverVehicleOutline, surroundingCpmObjects, currentCpmPosition,
+                                      currentCpmVehicleLength, currentCpmVehicleWidth, currentCpmHeading);
+        }
+        if (mCheckableDetectionLevels[detectionLevels::Level4]) {
+            result.proximityPlausibility = ProximityPlausibilityCheck(currentCpmPosition, receiverPosition,
+                                                                      surroundingCpmObjects,
+                                                                      (*currentCpm)->header.stationID);
+            result.rangePlausibility = RangePlausibilityCheck(currentCpmPosition, receiverPosition);
+            if (mCheckingFirstCpm) {
+                result.suddenAppearance = SuddenAppearanceCheck(currentCpmPosition, receiverPosition);
+            }
+        }
+        mCheckingFirstCpm = false;
+        mLastCpmPosition = currentCpmPosition;
+        mLastCpmSpeed = currentCpmSpeed;
+        mLastCpmSpeedConfidence = currentCpmSpeedConfidence;
+        mLastCpmSpeedVector = currentCpmSpeedVector;
+        return std::make_shared<CheckResult>(result);
+    }
+
     std::bitset<16> LegacyChecks::checkSemanticLevel1Report(const std::shared_ptr<vanetza::asn1::Cam> &currentCam) {
 
         CheckResult result;
@@ -280,6 +413,17 @@ namespace artery {
         double currentCamSpeed = (double) currentHfc.speed.speedValue / 100.0;
 
         result.speedPlausibility = SpeedPlausibilityCheck(currentCamSpeed);
+        return mThresholdFusion->checkForReport(result)[detectionLevels::Level1];
+    }
+    std::bitset<16> LegacyChecks::checkSemanticLevel1Report(const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm) {
+
+        CheckResult result;
+
+        auto currentHfc =
+                (*currentCpm)->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer;
+        double currentCpmSpeed = (double) currentHfc.speed.speedValue / 100.0;
+
+        result.speedPlausibility = SpeedPlausibilityCheck(currentCpmSpeed);
         return mThresholdFusion->checkForReport(result)[detectionLevels::Level1];
     }
 
@@ -336,6 +480,59 @@ namespace artery {
         result.frequency = BaseChecks::FrequencyCheck(camDeltaTime);
         return mThresholdFusion->checkForReport(result)[detectionLevels::Level2];
     }
+    std::bitset<16> LegacyChecks::checkSemanticLevel2Report(const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm,
+                                                            const std::shared_ptr<vanetza::asn1::Cpm> &lastCpm) {
+        CheckResult result;
+
+        Position currentCpmPosition = convertReferencePosition(
+                (*currentCpm)->cpm.cpmParameters.managementContainer.referencePosition, mSimulationBoundary, mTraciAPI);
+        PosConfidenceEllipse_t currentCpmPositionConfidence =
+                (*currentCpm)->cpm.cpmParameters.managementContainer.referencePosition.positionConfidenceEllipse;
+
+        auto currentCpmHfc =
+                (*currentCpm)->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer;
+        double currentCpmSpeed = (double) currentCpmHfc.speed.speedValue / 100.0;
+        double currentCpmSpeedConfidence = (double) currentCpmHfc.speed.speedConfidence / 100.0;
+        double currentCpmAcceleration =
+                (double) currentCpmHfc.longitudinalAcceleration->longitudinalAccelerationValue / 10.0;
+        double currentCpmHeading = (double) currentCpmHfc.heading.headingValue / 10;
+        Position currentCpmSpeedVector = getVector(currentCpmSpeed, currentCpmHeading);
+        Position currentCpmAccelerationVector = getVector(currentCpmAcceleration, currentCpmHeading);
+
+        Position lastCpmPosition = convertReferencePosition(
+                (*lastCpm)->cpm.cpmParameters.managementContainer.referencePosition, mSimulationBoundary, mTraciAPI);
+
+        auto lastCpmHfc =
+                (*lastCpm)->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer;
+        double lastCpmSpeed = (double) lastCpmHfc.speed.speedValue / 100.0;
+        double lastCpmAcceleration =
+                (double) lastCpmHfc.longitudinalAcceleration->longitudinalAccelerationValue / 10.0;
+        double lastCpmHeading = (double) lastCpmHfc.heading.headingValue / 10;
+        Position lastCpmSpeedVector = getVector(lastCpmSpeed, lastCpmHeading);
+        Position lastCpmAccelerationVector = getVector(lastCpmAcceleration, currentCpmHeading);
+
+        auto cpmDeltaTime = (double) (uint16_t) ((*currentCpm)->cpm.generationDeltaTime -
+                                                 (*lastCpm)->cpm.generationDeltaTime);
+        result.consistencyIsChecked = true;
+
+        result.positionConsistency = PositionConsistencyCheck(currentCpmPosition, lastCpmPosition, cpmDeltaTime);
+        result.speedConsistency = SpeedConsistencyCheck(currentCpmSpeed, lastCpmSpeed, cpmDeltaTime);
+        result.positionSpeedConsistency =
+                PositionSpeedConsistencyCheck(currentCpmPosition, lastCpmPosition, currentCpmSpeed, lastCpmSpeed,
+                                              cpmDeltaTime);
+        result.positionSpeedMaxConsistency =
+                PositionSpeedMaxConsistencyCheck(currentCpmPosition, lastCpmPosition, currentCpmSpeed, lastCpmSpeed,
+                                                 cpmDeltaTime);
+        result.positionHeadingConsistency =
+                PositionHeadingConsistencyCheck(currentCpmHeading, currentCpmPosition, lastCpmPosition,
+                                                cpmDeltaTime, currentCpmSpeed);
+        KalmanChecks(currentCpmPosition, currentCpmPositionConfidence, currentCpmSpeed,
+                     currentCpmSpeedVector, currentCpmSpeedConfidence, currentCpmAcceleration,
+                     currentCpmAccelerationVector, currentCpmHeading, lastCpmPosition,
+                     lastCpmSpeedVector, cpmDeltaTime, result);
+        result.frequency = BaseChecks::FrequencyCheck(cpmDeltaTime);
+        return mThresholdFusion->checkForReport(result)[detectionLevels::Level2];
+    }
 
     std::bitset<16> LegacyChecks::checkSemanticLevel3Report(const std::shared_ptr<vanetza::asn1::Cam> &currentCam,
                                                             const std::vector<std::shared_ptr<vanetza::asn1::Cam>> &neighbourCams) {
@@ -357,6 +554,26 @@ namespace artery {
         result.intersection = IntersectionCheck(currentCamOutline, neighbourCams);
         return mThresholdFusion->checkForReport(result)[detectionLevels::Level3];
     }
+    std::bitset<16> LegacyChecks::checkSemanticLevel3Report(const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm,
+                                                            const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &neighbourCpms) {
+        CheckResult result;
+        Position currentCpmPosition = convertReferencePosition(
+                (*currentCpm)->cpm.cpmParameters.managementContainer.referencePosition, mSimulationBoundary, mTraciAPI);
+        auto currentHfc =
+                (*currentCpm)->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer;
+        double currentCpmSpeed = (double) currentHfc.speed.speedValue / 100.0;
+        double currentCpmHeading = (double) currentHfc.heading.headingValue / 10;
+        double currentCpmVehicleLength = (double) currentHfc.vehicleLength->vehicleLengthValue / 10;
+        double currentCpmVehicleWidth = (double) (long)currentHfc.vehicleWidth / 10;
+
+
+        std::vector<Position> currentCpmOutline = getVehicleOutline(currentCpmPosition,
+                                                                    Angle::from_degree(currentCpmHeading),
+                                                                    currentCpmVehicleLength, currentCpmVehicleWidth);
+        result.positionPlausibility = PositionPlausibilityCheck(currentCpmPosition, currentCpmSpeed);
+        result.intersection = IntersectionCheck(currentCpmOutline, neighbourCpms);
+        return mThresholdFusion->checkForReport(result)[detectionLevels::Level3];
+    }
 
     std::bitset<16>
     LegacyChecks::checkSemanticLevel4Report(const std::shared_ptr<vanetza::asn1::Cam> &currentCam,
@@ -368,8 +585,24 @@ namespace artery {
                 (*currentCam)->cam.camParameters.basicContainer.referencePosition, mSimulationBoundary, mTraciAPI);
 
         result.proximityPlausibility = ProximityPlausibilityCheck(currentCamPosition, receiverPosition,
-                                                                   neighbourCams, (*currentCam)->header.stationID);
+                                                                  neighbourCams, (*currentCam)->header.stationID);
         result.rangePlausibility = RangePlausibilityCheck(currentCamPosition, receiverPosition);
+
+        return mThresholdFusion->checkForReport(result)[detectionLevels::Level4];
+    }
+
+    std::bitset<16>
+    LegacyChecks::checkSemanticLevel4Report(const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm,
+                                            const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &neighbourCpms,
+                                            const SenderInfoContainer_t &senderInfo) {
+        CheckResult result;
+        Position receiverPosition = convertReferencePosition(senderInfo.referencePosition, mSimulationBoundary, mTraciAPI);
+        Position currentCpmPosition = convertReferencePosition(
+                (*currentCpm)->cpm.cpmParameters.managementContainer.referencePosition, mSimulationBoundary, mTraciAPI);
+
+        result.proximityPlausibility = ProximityPlausibilityCheck(currentCpmPosition, receiverPosition,
+                                                                  neighbourCpms, (*currentCpm)->header.stationID);
+        result.rangePlausibility = RangePlausibilityCheck(currentCpmPosition, receiverPosition);
 
         return mThresholdFusion->checkForReport(result)[detectionLevels::Level4];
     }
@@ -384,6 +617,15 @@ namespace artery {
         mThresholdFusion = nullptr;
     }
 
+    LegacyChecks::LegacyChecks(std::shared_ptr<const traci::API> traciAPI,
+                               GlobalEnvironmentModel *globalEnvironmentModel,
+                               DetectionParameters *detectionParameters, const Timer *timer,
+                               const std::map<detectionLevels::DetectionLevels, bool> &checkableDetectionLevels,
+                               const std::shared_ptr<vanetza::asn1::Cpm> &message)
+            : BaseChecks(std::move(traciAPI), globalEnvironmentModel, detectionParameters, timer,
+                         checkableDetectionLevels, message) {
+        mThresholdFusion = nullptr;
+    }
     LegacyChecks::LegacyChecks(std::shared_ptr<const traci::API> traciAPI,
                                GlobalEnvironmentModel *globalEnvironmentModel,
                                DetectionParameters *detectionParameters, double misbehaviorThreshold,

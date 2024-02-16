@@ -2,7 +2,7 @@
 // Created by bastian on 05.07.21.
 //
 
-#include "MisbehaviorAuthority.h"
+#include "MisbehaviorAuthorityCpm.h"
 #include "traci/Core.h"
 #include "artery/traci/Cast.h"
 #include "artery/application/misbehavior/report/MisbehaviorReportObject.h"
@@ -25,26 +25,26 @@ namespace artery {
 
     using namespace omnetpp;
 
-    Define_Module(MisbehaviorAuthority)
+    Define_Module(MisbehaviorAuthorityCpm)
 
-    MisbehaviorAuthority::MisbehaviorAuthority() {
+    MisbehaviorAuthorityCpm::MisbehaviorAuthorityCpm() {
         curl = curl_easy_init();
         traciInitSignal = cComponent::registerSignal("traci.init");
         traciCloseSignal = cComponent::registerSignal("traci.close");
         maNewReport = cComponent::registerSignal("newMisbehaviorReport");
-        maMisbehaviorAnnouncement = cComponent::registerSignal("misbehaviorAuthority.MisbehaviorAnnouncement");
+        maMisbehaviorAnnouncement = cComponent::registerSignal("MisbehaviorAuthorityCpm.MisbehaviorAnnouncement");
     }
 
-    MisbehaviorAuthority::~MisbehaviorAuthority() {
+    MisbehaviorAuthorityCpm::~MisbehaviorAuthorityCpm() {
         curl_easy_cleanup(curl);
         this->clear();
         delete mBaseChecks;
     }
 
-    void MisbehaviorAuthority::clear() {
+    void MisbehaviorAuthorityCpm::clear() {
     }
 
-    void MisbehaviorAuthority::initialize() {
+    void MisbehaviorAuthorityCpm::initialize() {
         cModule *traci = this->getParentModule()->getSubmodule("traci");
         traci->subscribe(traciInitSignal, this);
         traci->subscribe(traciCloseSignal, this);
@@ -65,15 +65,16 @@ namespace artery {
 
         mParameters->reportCleanupInterval = par("reportCleanupInterval");
         mParameters->reportCleanupAge = par("reportCleanupAge");
-        mParameters->reportCamRetentionTime = par("reportCamRetentionTime");
-        mParameters->reportCamRetentionCleanupInterval = par(
-                "reportCamRetentionCleanupInterval");
+
+        mParameters->reportCpmRetentionTime = par("reportCpmRetentionTime");
+        mParameters->reportCpmRetentionCleanupInterval = par(
+                "reportCpmRetentionCleanupInterval");
 
         mParameters->considerReporterScore = par("considerReporterScore");
         mParameters->considerEvidenceScore = par("considerEvidenceScore");
         mParameters->considerReportAge = par("considerReportAge");
         mParameters->considerReportValidity = par("considerReportValidity");
-        mParameters->evidenceScoreMaxCamCount = par("evidenceScoreMaxCamCount");
+        mParameters->evidenceScoreMaxCpmCount = par("evidenceScoreMaxCpmCount");
 
 
         mParameters->misbehaviorThreshold = par("misbehaviorThreshold");
@@ -100,7 +101,7 @@ namespace artery {
 
     }
 
-    void MisbehaviorAuthority::finish() {
+    void MisbehaviorAuthorityCpm::finish() {
         recordScalar("totalReportCount", mTotalReportCount);
         recordScalar("truePositiveCount", mTruePositiveCount);
         recordScalar("falsePositiveCount", mFalsePositiveCount);
@@ -196,7 +197,7 @@ namespace artery {
         cComponent::finish();
     }
 
-    void MisbehaviorAuthority::handleMessage(omnetpp::cMessage *msg) {
+    void MisbehaviorAuthorityCpm::handleMessage(omnetpp::cMessage *msg) {
         Enter_Method("handleMessage");
         if (msg == mMsgGuiUpdate) {
 //            createGuiJsonData();
@@ -209,7 +210,7 @@ namespace artery {
         }
     }
 
-    void MisbehaviorAuthority::removeOldReports() {
+    void MisbehaviorAuthorityCpm::removeOldReports() {
         for (auto it = mCurrentReports.begin(); it != mCurrentReports.end();) {
             auto report = it->second;
             if (countTaiMilliseconds(mTimer.getTimeFor(simTime())) - report->generationTime >
@@ -221,7 +222,7 @@ namespace artery {
         }
     }
 
-    void MisbehaviorAuthority::receiveSignal(cComponent *source, simsignal_t signal, const SimTime &,
+    void MisbehaviorAuthorityCpm::receiveSignal(cComponent *source, simsignal_t signal, const SimTime &,
                                              cObject *) {
         if (signal == traciInitSignal) {
             auto core = check_and_cast<traci::Core *>(source);
@@ -244,8 +245,19 @@ namespace artery {
             clear();
         }
     }
+    template<class P, class T>
+    P check_and_cast_try(T *p)
+    {
+        if (!p)
+            return NULL;
+        P ret = dynamic_cast<P>(p);
+        if (!ret)
+            return NULL;
+        return ret;
+    }
+    //tr me ?
 
-    void MisbehaviorAuthority::receiveSignal(cComponent *source, omnetpp::simsignal_t signal, cObject *obj,
+    void MisbehaviorAuthorityCpm::receiveSignal(cComponent *source, omnetpp::simsignal_t signal, cObject *obj,
                                              cObject *) {
         Enter_Method("receiveSignal");
         if (signal == maNewReport) {
@@ -256,26 +268,66 @@ namespace artery {
             }
         } else if (signal == maMisbehaviorAnnouncement) {
             std::vector<StationID_t> stationIds = *reinterpret_cast<std::vector<StationID_t> *>(obj);
-            auto misbehaviorCaService = check_and_cast<MisbehaviorCaService *>(source);
-            processMisbehaviorAnnouncement(stationIds, misbehaviorCaService);
+            auto misbehaviorCpmService = check_and_cast<MisbehaviorCpmService *>(source);
+            processMisbehaviorAnnouncement(stationIds, misbehaviorCpmService);
         }
     }
 
-    void MisbehaviorAuthority::processMisbehaviorAnnouncement(const std::vector<StationID_t> &stationIds,
-                                                              MisbehaviorCaService *misbehaviorCaService) {
+//    void MisbehaviorAuthorityCpm::receiveSignal(cComponent *source, omnetpp::simsignal_t signal, cObject *obj,
+//                                             cObject *) {
+//        Enter_Method("receiveSignal");
+//        if (signal == maNewReport) {
+//            auto *reportObject = dynamic_cast<MisbehaviorReportObject *>(obj);
+//            std::shared_ptr<Report> report = std::make_shared<Report>(*reportObject->shared_ptr());
+//            if (report->successfullyParsed) {
+//                processReport(report);
+//            }
+//        } else if (signal == maMisbehaviorAnnouncement) {
+//            std::vector<StationID_t> stationIds = *reinterpret_cast<std::vector<StationID_t> *>(obj);
+//////            auto misbehaviorCaService = check_and_cast<MisbehaviorCaService *>(source);
+//////            processMisbehaviorAnnouncement(stationIds, misbehaviorCaService);
+////
+////            auto misbehaviorCpmService = check_and_cast<MisbehaviorCpmService *>(source);
+////            processMisbehaviorAnnouncement(stationIds, misbehaviorCpmService);
+//
+//            cout<<"processing "<< source->getFullName()<< ":" <<obj <<endl;
+//            try {
+//                auto misbehaviorCaService = check_and_cast<MisbehaviorCaService *>(source);
+//                if (misbehaviorCaService != NULL) {
+//                    std::vector<StationID_t> stationIds = *reinterpret_cast<std::vector<StationID_t> *>(obj);
+//                    processMisbehaviorAnnouncement(stationIds, misbehaviorCaService);
+//                } else {
+//                    try{
+//                        auto misbehaviorCpmService = check_and_cast<MisbehaviorCpmService *>(source);
+//                        if (misbehaviorCpmService) {
+//                            std::vector<StationID_t> stationIds = *reinterpret_cast<std::vector<StationID_t> *>(obj);
+//                            processMisbehaviorAnnouncement(stationIds, misbehaviorCpmService);
+//                        }
+//                    }catch (...){
+//                        cout << "error cp" << source->getFullName() ;
+//                    }
+//                }
+//            }catch (...){
+//                cout << "error ca" << source->getFullName() ;
+//            }
+//        }
+//    }
+
+    void MisbehaviorAuthorityCpm::processMisbehaviorAnnouncement(const std::vector<StationID_t> &stationIds,
+                                                              MisbehaviorCpmService *misbehaviorCpmService) {
         if (stationIds.size() > 1) {
             StationID_t vehicleStationId = stationIds.front();
-            attackTypes::AttackTypes attackType = misbehaviorCaService->getAttackType();
+            attackTypes::AttackTypes attackType = misbehaviorCpmService->getAttackType();
             std::shared_ptr<MisbehavingVehicle> misbehavingVehicle =
                     std::make_shared<MisbehavingVehicle>(vehicleStationId,
-                                                         misbehaviorCaService->getMisbehaviorType(),
+                                                         misbehaviorCpmService->getMisbehaviorType(),
                                                          attackType);
             mMisbehavingVehicles[vehicleStationId] = misbehavingVehicle;
             mMisbehavingVehiclesByAttackType[attackType].insert(misbehavingVehicle);
             for (const auto &stationId: stationIds) {
                 std::shared_ptr<MisbehavingPseudonym> misbehavingPseudonym =
                         std::make_shared<MisbehavingPseudonym>(stationId,
-                                                               misbehaviorCaService->getMisbehaviorType(),
+                                                               misbehaviorCpmService->getMisbehaviorType(),
                                                                attackType, misbehavingVehicle);
                 mMisbehavingPseudonyms[stationId] = misbehavingPseudonym;
                 misbehavingVehicle->addPseudonym(misbehavingPseudonym);
@@ -286,17 +338,17 @@ namespace artery {
             }
         } else {
             StationID_t vehicleStationId = stationIds.front();
-            attackTypes::AttackTypes attackType = misbehaviorCaService->getAttackType();
+            attackTypes::AttackTypes attackType = misbehaviorCpmService->getAttackType();
             std::shared_ptr<MisbehavingVehicle> misbehavingVehicle =
                     std::make_shared<MisbehavingVehicle>(vehicleStationId,
-                                                         misbehaviorCaService->getMisbehaviorType(),
+                                                         misbehaviorCpmService->getMisbehaviorType(),
                                                          attackType);
             mMisbehavingVehicles[vehicleStationId] = misbehavingVehicle;
             mMisbehavingVehiclesByAttackType[attackType].insert(misbehavingVehicle);
 
             std::shared_ptr<MisbehavingPseudonym> misbehavingPseudonym =
                     std::make_shared<MisbehavingPseudonym>(vehicleStationId,
-                                                           misbehaviorCaService->getMisbehaviorType(),
+                                                           misbehaviorCpmService->getMisbehaviorType(),
                                                            attackType, misbehavingVehicle);
             mMisbehavingPseudonyms[vehicleStationId] = misbehavingPseudonym;
             misbehavingVehicle->addPseudonym(misbehavingPseudonym);
@@ -307,14 +359,15 @@ namespace artery {
         }
     }
 
-    void MisbehaviorAuthority::processReport(const std::shared_ptr<Report> &report) {
+
+    void MisbehaviorAuthorityCpm::processReport(const std::shared_ptr<Report> &report) {
         mTotalReportCount++;
         mNewReport = true;
 
         std::shared_ptr<ReportedPseudonym> reportedPseudonym;
         std::shared_ptr<ReportingPseudonym> reportingPseudonym;
         {
-            StationID_t reportedStationId = (*report->reportedMessage)->header.stationID;
+            StationID_t reportedStationId = (*report->reportedCpmMessage)->header.stationID;
             auto it = mReportedPseudonyms.find(reportedStationId);
             if (it != mReportedPseudonyms.end()) {
                 reportedPseudonym = it->second;
@@ -339,9 +392,9 @@ namespace artery {
         if(report->detectionType.present == detectionTypes::SemanticType &&
            report->detectionType.semantic->detectionLevel == detectionLevels::Level2){
             if (report->isValid) {
-                statsValidLevel2ReportEvidenceCount.collect(report->evidence.reportedMessages.size());
+                statsValidLevel2ReportEvidenceCount.collect(report->evidence.reportedCpmMessages.size());
             } else {
-                statsInvalidLevel2ReportEvidenceCount.collect(report->evidence.reportedMessages.size());
+                statsInvalidLevel2ReportEvidenceCount.collect(report->evidence.reportedCpmMessages.size());
             }
         }
         report->score = scoreReport(report, reportingPseudonym);
@@ -355,7 +408,7 @@ namespace artery {
         updateDetectionRates(report, reportedPseudonym, reportingPseudonym);
     }
 
-    double MisbehaviorAuthority::scoreReport(const std::shared_ptr<Report> &report,
+    double MisbehaviorAuthorityCpm::scoreReport(const std::shared_ptr<Report> &report,
                                              const std::shared_ptr<ReportingPseudonym> &reportingPseudonym) {
         uint64_t currentTime = countTaiMilliseconds(mTimer.getTimeFor(simTime()));
         double ageScore = 1;
@@ -379,9 +432,9 @@ namespace artery {
         if (mParameters->considerEvidenceScore) {
             if (report->detectionType.present == detectionTypes::SemanticType &&
                 report->detectionType.semantic->detectionLevel == detectionLevels::Level2) {
-                int evidenceCamCount = (int) report->evidence.reportedMessages.size();
-                if (evidenceCamCount < mParameters->evidenceScoreMaxCamCount) {
-                    evidenceScore = normalizeValue(evidenceCamCount, 1, mParameters->evidenceScoreMaxCamCount);
+                int evidenceCpmCount = (int) report->evidence.reportedCpmMessages.size();
+                if (evidenceCpmCount < mParameters->evidenceScoreMaxCpmCount) {
+                    evidenceScore = normalizeValue(evidenceCpmCount, 1, mParameters->evidenceScoreMaxCpmCount);
                 }
             }
         }
@@ -395,7 +448,7 @@ namespace artery {
         return reportScore;
     }
 
-    bool MisbehaviorAuthority::compareErrorCodes(std::bitset<16> reportedErrorCodes, std::bitset<16> actualErrorCodes) {
+    bool MisbehaviorAuthorityCpm::compareErrorCodes(std::bitset<16> reportedErrorCodes, std::bitset<16> actualErrorCodes) {
         for (int i = 0; i < actualErrorCodes.size(); i++) {
             if (reportedErrorCodes[i] == 1 && actualErrorCodes[i] == 0) {
                 return false;
@@ -404,44 +457,44 @@ namespace artery {
         return true;
     }
 
-    bool MisbehaviorAuthority::validateSemanticLevel1Report(const std::shared_ptr<Report> &report) {
-        std::bitset<16> actualErrorCodes = mBaseChecks->checkSemanticLevel1Report((report->reportedMessage));
+    bool MisbehaviorAuthorityCpm::validateSemanticLevel1Report(const std::shared_ptr<Report> &report) {
+        std::bitset<16> actualErrorCodes = mBaseChecks->checkSemanticLevel1Report((report->reportedCpmMessage));
         std::bitset<16> reportedErrorCodes = report->detectionType.semantic->errorCode;
         return compareErrorCodes(reportedErrorCodes, actualErrorCodes);
     }
 
-    bool MisbehaviorAuthority::validateSemanticLevel2Report(const std::shared_ptr<Report> &report) {
+    bool MisbehaviorAuthorityCpm::validateSemanticLevel2Report(const std::shared_ptr<Report> &report) {
         std::bitset<16> actualErrorCodes;
         std::bitset<16> reportedErrorCodes = report->detectionType.semantic->errorCode;
-        const std::vector<std::shared_ptr<vanetza::asn1::Cam>> &reportedMessages = report->evidence.reportedMessages;
-        mBaseChecks->initializeKalmanFilters(reportedMessages.front());
-//        for (int i = (int) reportedMessages.size() - 1; i > 0; i--) {
-        for (int i = 1; i < (int) reportedMessages.size(); i++) {
-            actualErrorCodes |= mBaseChecks->checkSemanticLevel2Report(reportedMessages[i],
-                                                                       reportedMessages[i - 1]);
+        const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &reportedCpmMessages = report->evidence.reportedCpmMessages;
+        mBaseChecks->initializeKalmanFilters(reportedCpmMessages.front());
+//        for (int i = (int) reportedCpmMessages.size() - 1; i > 0; i--) {
+        for (int i = 1; i < (int) reportedCpmMessages.size(); i++) {
+            actualErrorCodes |= mBaseChecks->checkSemanticLevel2Report(reportedCpmMessages[i],
+                                                                       reportedCpmMessages[i - 1]);
         }
-        actualErrorCodes |= mBaseChecks->checkSemanticLevel2Report(report->reportedMessage,
-                                                                   reportedMessages.back());
+        actualErrorCodes |= mBaseChecks->checkSemanticLevel2Report(report->reportedCpmMessage,
+                                                                   reportedCpmMessages.back());
         return compareErrorCodes(reportedErrorCodes, actualErrorCodes);
     }
 
-    bool MisbehaviorAuthority::validateSemanticLevel3Report(const std::shared_ptr<Report> &report) {
-        std::bitset<16> actualErrorCodes = mBaseChecks->checkSemanticLevel3Report(report->reportedMessage,
-                                                                                  report->evidence.neighbourMessages);
+    bool MisbehaviorAuthorityCpm::validateSemanticLevel3Report(const std::shared_ptr<Report> &report) {
+        std::bitset<16> actualErrorCodes = mBaseChecks->checkSemanticLevel3Report(report->reportedCpmMessage,
+                                                                                  report->evidence.neighbourCpmMessages);
         std::bitset<16> reportedErrorCodes = report->detectionType.semantic->errorCode;
 
         return compareErrorCodes(reportedErrorCodes, actualErrorCodes);
     }
 
-    bool MisbehaviorAuthority::validateSemanticLevel4Report(const std::shared_ptr<Report> &report) {
-        std::bitset<16> actualErrorCodes = mBaseChecks->checkSemanticLevel4Report(report->reportedMessage,
-                                                                                  report->evidence.neighbourMessages,
+    bool MisbehaviorAuthorityCpm::validateSemanticLevel4Report(const std::shared_ptr<Report> &report) {
+        std::bitset<16> actualErrorCodes = mBaseChecks->checkSemanticLevel4Report(report->reportedCpmMessage,
+                                                                                  report->evidence.neighbourCpmMessages,
                                                                                   *report->evidence.senderInfo);
         std::bitset<16> reportedErrorCodes = report->detectionType.semantic->errorCode;
         return compareErrorCodes(reportedErrorCodes, actualErrorCodes);
     }
 
-    bool MisbehaviorAuthority::validateReportReason(const std::shared_ptr<Report> &report) {
+    bool MisbehaviorAuthorityCpm::validateReportReason(const std::shared_ptr<Report> &report) {
         if (report->detectionType.semantic != nullptr) {
             switch (report->detectionType.semantic->detectionLevel) {
                 case detectionLevels::Level1:
@@ -459,7 +512,7 @@ namespace artery {
         return false;
     }
 
-    std::shared_ptr<MisbehavingPseudonym> MisbehaviorAuthority::getMisbehavingPseudonym(const StationID_t &stationId) {
+    std::shared_ptr<MisbehavingPseudonym> MisbehaviorAuthorityCpm::getMisbehavingPseudonym(const StationID_t &stationId) {
         auto it = mMisbehavingPseudonyms.find(stationId);
         if (it != mMisbehavingPseudonyms.end()) {
             return (*it).second;
@@ -468,7 +521,7 @@ namespace artery {
         }
     }
 
-    void MisbehaviorAuthority::updateReactionType(const shared_ptr<ReportedPseudonym> &reportedPseudonym) {
+    void MisbehaviorAuthorityCpm::updateReactionType(const shared_ptr<ReportedPseudonym> &reportedPseudonym) {
         size_t score = reportedPseudonym->getTotalScore();
         reactionTypes::ReactionTypes newReactionType = reactionTypes::Nothing;
         if (score > 10) {
@@ -488,7 +541,7 @@ namespace artery {
         }
     }
 
-    void MisbehaviorAuthority::updateDetectionRates(const std::shared_ptr<Report> &report,
+    void MisbehaviorAuthorityCpm::updateDetectionRates(const std::shared_ptr<Report> &report,
                                                     const std::shared_ptr<ReportedPseudonym> &reportedPseudonym,
                                                     const std::shared_ptr<ReportingPseudonym> &reportingPseudonym) {
 
@@ -563,7 +616,7 @@ namespace artery {
         }
     }
 
-/*    rapidjson::Value MisbehaviorAuthority::getRadarData(rapidjson::Document::AllocatorType &allocator) {
+/*    rapidjson::Value MisbehaviorAuthorityCpm::getRadarData(rapidjson::Document::AllocatorType &allocator) {
         rapidjson::Value reactionsData(rapidjson::kObjectType);
         std::vector<int> reactionsBenign(5, 0);
         std::vector<int> reactionsMalicious(5, 0);
@@ -608,7 +661,7 @@ namespace artery {
         return reactionsData;
     }
 
-    rapidjson::Value MisbehaviorAuthority::getRecentReported(rapidjson::Document::AllocatorType &allocator) {
+    rapidjson::Value MisbehaviorAuthorityCpm::getRecentReported(rapidjson::Document::AllocatorType &allocator) {
         rapidjson::Value recentlyReportedData(rapidjson::kObjectType);
         rapidjson::Value labels;
         rapidjson::Value data;
@@ -623,7 +676,7 @@ namespace artery {
         return recentlyReportedData;
     }
 
-    rapidjson::Value MisbehaviorAuthority::getDetectionRates(rapidjson::Document::AllocatorType &allocator) {
+    rapidjson::Value MisbehaviorAuthorityCpm::getDetectionRates(rapidjson::Document::AllocatorType &allocator) {
         rapidjson::Value detectionRatesData(rapidjson::kObjectType);
         rapidjson::Value detectionRatesLabels;
         rapidjson::Value accurate;
@@ -650,7 +703,7 @@ namespace artery {
         return detectionRatesData;
     }
 
-    void MisbehaviorAuthority::createGuiJsonData() {
+    void MisbehaviorAuthorityCpm::createGuiJsonData() {
         rapidjson::Document d;
         d.SetObject();
         rapidjson::Document::AllocatorType &allocator = d.GetAllocator();
@@ -684,7 +737,7 @@ namespace artery {
         return a.stationId > b.stationId;
     }
 
-    std::vector<RecentReported> MisbehaviorAuthority::getRecentReported() {
+    std::vector<RecentReported> MisbehaviorAuthorityCpm::getRecentReported() {
         std::vector<RecentReported> recentReported;
         for (const auto &r: mReportedPseudonyms) {
             auto reportedPseudonym = *r.second;
@@ -709,7 +762,7 @@ namespace artery {
         return recentReported;
     }
 
-    void MisbehaviorAuthority::printReportsPerPseudonym() {
+    void MisbehaviorAuthorityCpm::printReportsPerPseudonym() {
         int attackerCount = 0;
         int benignCount = 0;
         int reportTpCount = 0;

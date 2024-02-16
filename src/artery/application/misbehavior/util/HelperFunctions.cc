@@ -3,6 +3,7 @@
 //
 
 #include "HelperFunctions.h"
+#include "vanetza/asn1/its/CpmParameters.h"
 #include <artery/traci/Cast.h>
 #include <omnetpp.h>
 
@@ -104,6 +105,28 @@ namespace artery {
         return vehicleOutline;
     }
 
+    std::vector<Position> getVehicleOutline(const vanetza::asn1::Cpm &cpm, const traci::Boundary &simulationBoundary,
+                                            const std::shared_ptr<const traci::API> &traciAPI) {
+        const CpmParameters_t &cpmParameters = cpm->cpm.cpmParameters;
+        OriginatingVehicleContainer hfc = cpmParameters.stationDataContainer->choice.originatingVehicleContainer;
+        Position position = convertReferencePosition(cpmParameters.managementContainer.referencePosition,
+                                                     simulationBoundary, traciAPI);
+        double heading = (double) hfc.heading.headingValue / 10;
+        double length = (double) hfc.vehicleLength->vehicleLengthValue / 10;
+        double width = (double) *hfc.vehicleWidth / 10;
+        Angle alpha = -1.0 * (vanetza::units::Angle::from_value(heading * PI / 180) -
+                              0.5 * boost::math::double_constants::pi * boost::units::si::radian);
+        auto transformationMatrix = transformVehicle(length, width, position, alpha);
+        std::vector<Position> squareOutline = {
+                Position(0.0, 0.5), // front left
+                Position(0.0, -0.5), // front right
+                Position(-1.0, -0.5), // back right
+                Position(-1.0, 0.5) // back left
+        };
+        std::vector<Position> vehicleOutline;
+        boost::geometry::transform(squareOutline, vehicleOutline, transformationMatrix);
+        return vehicleOutline;
+    }
     double getDistanceToNearestRoad(GlobalEnvironmentModel *globalEnvMod, const Position &position) {
         double minRoadDistance = 9999;
         std::vector<GeometryRtreeValue> laneResults;
@@ -518,7 +541,8 @@ namespace artery {
     }
 
 
-    bool camComp(const vanetza::asn1::Cam &message1, const vanetza::asn1::Cam &message2) {
+    bool camComp(const vanetza::asn1::Cam &message1, const vanetza::asn1::Cam &message2)
+    {
         {
             ItsPduHeader header1 = message1->header;
             ItsPduHeader header2 = message2->header;
@@ -829,12 +853,331 @@ namespace artery {
         return false;
     }
 
+    bool cpmComp(const vanetza::asn1::Cpm &message1, const vanetza::asn1::Cpm &message2)
+    {
+        {
+            ItsPduHeader header1 = message1->header;
+            ItsPduHeader header2 = message2->header;
+            if (header1.protocolVersion != header2.protocolVersion) {
+                return header1.protocolVersion < header2.protocolVersion;
+            } else if (header1.messageID != header2.messageID) {
+                return header1.messageID < header2.messageID;
+            } else if (header1.stationID != header2.stationID) {
+                return header1.stationID < header2.stationID;
+            }
+        }
+        {
+            auto cpm1 = message1->cpm;
+            auto cpm2 = message2->cpm;
+            if (cpm1.generationDeltaTime != cpm2.generationDeltaTime) {
+                return cpm1.generationDeltaTime < cpm2.generationDeltaTime;
+            }
+            {
+                auto bc1 = cpm1.cpmParameters.managementContainer;
+                auto bc2 = cpm2.cpmParameters.managementContainer;
+                if (bc1.stationType != bc2.stationType) {
+                    return bc1.stationType < bc2.stationType;
+                }
+                {
+                    ReferencePosition referencePosition1 = bc1.referencePosition;
+                    ReferencePosition referencePosition2 = bc2.referencePosition;
+                    if (referencePosition1.longitude != referencePosition2.longitude) {
+                        return referencePosition1.longitude < referencePosition2.longitude;
+                    } else if (referencePosition1.latitude != referencePosition2.latitude) {
+                        return referencePosition1.latitude < referencePosition2.latitude;
+                    }
+                    {
+                        Altitude altitude1 = referencePosition1.altitude;
+                        Altitude altitude2 = referencePosition2.altitude;
+                        if (altitude1.altitudeConfidence != altitude2.altitudeConfidence) {
+                            return altitude1.altitudeConfidence < altitude2.altitudeConfidence;
+                        } else if (altitude1.altitudeValue != altitude2.altitudeValue) {
+                            return altitude1.altitudeValue < altitude2.altitudeValue;
+                        }
+                    }
+                    {
+                        PosConfidenceEllipse posConfidenceEllipse1 = referencePosition1.positionConfidenceEllipse;
+                        PosConfidenceEllipse posConfidenceEllipse2 = referencePosition2.positionConfidenceEllipse;
+                        if (posConfidenceEllipse1.semiMajorConfidence != posConfidenceEllipse2.semiMajorConfidence) {
+                            return posConfidenceEllipse1.semiMajorConfidence <
+                                   posConfidenceEllipse2.semiMajorConfidence;
+                        } else if (
+                                posConfidenceEllipse1.semiMinorConfidence !=
+                                posConfidenceEllipse2.semiMinorConfidence) {
+                            return posConfidenceEllipse1.semiMinorConfidence <
+                                   posConfidenceEllipse2.semiMinorConfidence;
+                        } else if (
+                                posConfidenceEllipse1.semiMajorOrientation !=
+                                posConfidenceEllipse2.semiMajorOrientation) {
+                            return posConfidenceEllipse1.semiMajorOrientation <
+                                   posConfidenceEllipse2.semiMajorOrientation;
+                        }
+                    }
+                }
+            }
+            auto highFrequencyContainer1 = cpm1.cpmParameters.stationDataContainer;
+            auto highFrequencyContainer2 = cpm2.cpmParameters.stationDataContainer;
+            if (highFrequencyContainer1->present != highFrequencyContainer2->present) {
+                return highFrequencyContainer1->present < highFrequencyContainer2->present;
+            }
+            if (cpm1.cpmParameters.stationDataContainer->present ==
+                HighFrequencyContainer_PR_basicVehicleContainerHighFrequency) {
+                auto hfc1 = cpm1.cpmParameters.stationDataContainer->choice.originatingVehicleContainer;
+                auto hfc2 = cpm2.cpmParameters.stationDataContainer->choice.originatingVehicleContainer;
+                if (hfc1.vehicleWidth != hfc2.vehicleWidth) {
+                    return hfc1.vehicleWidth < hfc2.vehicleWidth;
+                } else if (hfc1.driveDirection != hfc2.driveDirection) {
+                    return hfc1.driveDirection < hfc2.driveDirection;
+                }
+//                else if (hfc1.curvatureCalculationMode != hfc2.curvatureCalculationMode) {
+//                    return hfc1.curvatureCalculationMode < hfc2.curvatureCalculationMode;
+//                }
+                {
+                    Speed speed1 = hfc1.speed;
+                    Speed speed2 = hfc2.speed;
+                    if (speed1.speedValue != speed2.speedValue) {
+                        return speed1.speedValue < speed2.speedValue;
+                    } else if (speed1.speedConfidence != speed2.speedConfidence) {
+                        return speed1.speedConfidence < speed2.speedConfidence;
+                    }
+                }
+                {
+                    Heading heading1 = hfc1.heading;
+                    Heading heading2 = hfc2.heading;
+                    if (heading1.headingValue != heading2.headingValue) {
+                        return heading1.headingValue < heading2.headingValue;
+                    } else if (heading1.headingConfidence != heading2.headingConfidence) {
+                        return heading1.headingConfidence < heading2.headingConfidence;
+                    }
+                }
+                {
+                    auto vehicleLength1 = hfc1.vehicleLength;
+                    auto vehicleLength2 = hfc2.vehicleLength;
+                    if (vehicleLength1->vehicleLengthValue != vehicleLength2->vehicleLengthValue) {
+                        return vehicleLength1->vehicleLengthValue < vehicleLength2->vehicleLengthValue;
+                    } else if (vehicleLength1->vehicleLengthConfidenceIndication !=
+                               vehicleLength2->vehicleLengthConfidenceIndication) {
+                        return vehicleLength1->vehicleLengthConfidenceIndication <
+                               vehicleLength2->vehicleLengthConfidenceIndication;
+                    }
+                }
+                {
+                    auto la1 = hfc1.longitudinalAcceleration;
+                    auto la2 = hfc2.longitudinalAcceleration;
+                    if (la1->longitudinalAccelerationValue != la2->longitudinalAccelerationValue) {
+                        return la1->longitudinalAccelerationValue < la2->longitudinalAccelerationValue;
+                    } else if (la1->longitudinalAccelerationConfidence != la2->longitudinalAccelerationConfidence) {
+                        return la1->longitudinalAccelerationConfidence < la2->longitudinalAccelerationConfidence;
+                    }
+                }
+//                {
+//                    Curvature curvature1 = hfc1.curvature;
+//                    Curvature curvature2 = hfc2.curvature;
+//                    if (curvature1.curvatureValue != curvature2.curvatureValue) {
+//                        return curvature1.curvatureValue < curvature2.curvatureValue;
+//                    } else if (curvature1.curvatureConfidence != curvature2.curvatureConfidence) {
+//                        return curvature1.curvatureConfidence < curvature2.curvatureConfidence;
+//                    }
+//                }
+                {
+                    auto yawRate1 = hfc1.yawRate;
+                    auto yawRate2 = hfc2.yawRate;
+                    if (yawRate1->yawRateValue != yawRate2->yawRateValue) {
+                        return yawRate1->yawRateValue < yawRate2->yawRateValue;
+                    } else if (yawRate1->yawRateConfidence != yawRate2->yawRateConfidence) {
+                        return yawRate1->yawRateConfidence < yawRate2->yawRateConfidence;
+                    }
+                }
+//                {
+//                    AccelerationControl_t *ac1 = hfc1.accelerationControl;
+//                    AccelerationControl_t *ac2 = hfc2.accelerationControl;
+//                    if (ac1 == nullptr && ac2 != nullptr ||
+//                        ac1 != nullptr && ac2 == nullptr) {
+//                        return ac1 < ac2;
+//                    }
+//                    if (ac1 != nullptr) {
+//                        if (ac1->buf != ac2->buf) {
+//                            return ac1->buf < ac2->buf;
+//                        }
+//                    }
+//                }
+//                {
+//                    LanePosition_t *lanePosition1 = hfc1.lanePosition;
+//                    LanePosition_t *lanePosition2 = hfc2.lanePosition;
+//                    if (lanePosition1 == nullptr && lanePosition2 != nullptr ||
+//                        lanePosition1 != nullptr && lanePosition2 == nullptr) {
+//                        return lanePosition1 < lanePosition2;
+//                    }
+//                    if (lanePosition1 != nullptr) {
+//                        if (*lanePosition1 != *lanePosition2) {
+//                            return *lanePosition1 < *lanePosition2;
+//                        }
+//                    }
+//                }
+//                {
+//                    SteeringWheelAngle *swa1 = hfc1.steeringWheelAngle;
+//                    SteeringWheelAngle *swa2 = hfc2.steeringWheelAngle;
+//                    if (swa1 == nullptr && swa2 != nullptr ||
+//                        swa1 != nullptr && swa2 == nullptr) {
+//                        return swa1 < swa2;
+//                    }
+//                    if (swa1 != nullptr) {
+//                        if (swa1->steeringWheelAngleConfidence != swa2->steeringWheelAngleConfidence) {
+//                            return swa1->steeringWheelAngleConfidence < swa2->steeringWheelAngleConfidence;
+//                        } else if (swa1->steeringWheelAngleValue != swa2->steeringWheelAngleValue) {
+//                            return swa1->steeringWheelAngleValue < swa2->steeringWheelAngleValue;
+//                        }
+//                    }
+//                }
+                {
+                    LateralAcceleration *la1 = hfc1.lateralAcceleration;
+                    LateralAcceleration *la2 = hfc2.lateralAcceleration;
+                    if (la1 == nullptr && la2 != nullptr ||
+                        la1 != nullptr && la2 == nullptr) {
+                        return la1 < la2;
+                    }
+                    if (la1 != nullptr) {
+                        if (la1->lateralAccelerationConfidence != la2->lateralAccelerationConfidence) {
+                            return la1->lateralAccelerationConfidence < la2->lateralAccelerationConfidence;
+                        } else if (la1->lateralAccelerationValue != la2->lateralAccelerationValue) {
+                            return la1->lateralAccelerationValue < la2->lateralAccelerationValue;
+                        }
+                    }
+                }
+                {
+                    VerticalAcceleration *va1 = hfc1.verticalAcceleration;
+                    VerticalAcceleration *va2 = hfc2.verticalAcceleration;
+                    if (va1 == nullptr && va2 != nullptr ||
+                        va1 != nullptr && va2 == nullptr) {
+                        return va1 < va2;
+                    }
+                    if (va1 != nullptr) {
+                        if (va1->verticalAccelerationConfidence != va2->verticalAccelerationConfidence) {
+                            return va1->verticalAccelerationConfidence < va2->verticalAccelerationConfidence;
+                        } else if (va1->verticalAccelerationValue != va2->verticalAccelerationValue) {
+                            return va1->verticalAccelerationValue < va2->verticalAccelerationValue;
+                        }
+                    }
+                }
+//                {
+//                    PerformanceClass_t *pc1 = hfc1.performanceClass;
+//                    PerformanceClass_t *pc2 = hfc2.performanceClass;
+//                    if (pc1 == nullptr && pc2 != nullptr ||
+//                        pc1 != nullptr && pc2 == nullptr) {
+//                        return pc1 < pc2;
+//                    }
+//                    if (pc1 != nullptr) {
+//                        if (*pc1 != *pc2) {
+//                            return *pc1 < *pc2;
+//                        }
+//                    }
+//                }
+//                {
+//                    CenDsrcTollingZone *cdtz1 = hfc1.cenDsrcTollingZone;
+//                    CenDsrcTollingZone *cdtz2 = hfc2.cenDsrcTollingZone;
+//                    if (cdtz1 == nullptr && cdtz2 != nullptr ||
+//                        cdtz1 != nullptr && cdtz2 == nullptr) {
+//                        return cdtz1 < cdtz2;
+//                    }
+//                    if (cdtz1 != nullptr) {
+//                        if (cdtz1->protectedZoneLatitude != cdtz2->protectedZoneLatitude) {
+//                            return cdtz1->protectedZoneLatitude < cdtz2->protectedZoneLatitude;
+//                        } else if (cdtz1->protectedZoneLongitude != cdtz2->protectedZoneLongitude) {
+//                            return cdtz1->protectedZoneLongitude < cdtz2->protectedZoneLongitude;
+//                        }
+//                        {
+//                            CenDsrcTollingZoneID_t *cid1 = cdtz1->cenDsrcTollingZoneID;
+//                            CenDsrcTollingZoneID_t *cid2 = cdtz2->cenDsrcTollingZoneID;
+//                            if (cid1 == nullptr && cid2 != nullptr ||
+//                                cid1 != nullptr && cid2 == nullptr) {
+//                                return cid1 < cid2;
+//                            }
+//                            if (*cid1 != *cid2) {
+//                                return *cid1 < *cid2;
+//                            }
+//                        }
+//                    }
+//                }
+            }
+//            {
+//                LowFrequencyContainer *lowFrequencyContainer1 = cpm1.cpmParameters.lowFrequencyContainer;
+//                LowFrequencyContainer *lowFrequencyContainer2 = cpm2.cpmParameters.lowFrequencyContainer;
+//                if (lowFrequencyContainer1 == nullptr && lowFrequencyContainer2 != nullptr ||
+//                    lowFrequencyContainer1 != nullptr && lowFrequencyContainer2 == nullptr) {
+//                    return lowFrequencyContainer1 < lowFrequencyContainer2;
+//                }
+//                if (lowFrequencyContainer1 != nullptr) {
+//                    if (lowFrequencyContainer1->present != lowFrequencyContainer2->present) {
+//                        return lowFrequencyContainer1->present < lowFrequencyContainer2->present;
+//                    }
+//                    if (lowFrequencyContainer1->present == LowFrequencyContainer_PR_basicVehicleContainerLowFrequency) {
+//                        BasicVehicleContainerLowFrequency_t lfc1 = lowFrequencyContainer1->choice.basicVehicleContainerLowFrequency;
+//                        BasicVehicleContainerLowFrequency_t lfc2 = lowFrequencyContainer2->choice.basicVehicleContainerLowFrequency;
+//                        if (lfc1.vehicleRole != lfc2.vehicleRole ||
+//                            *lfc1.exteriorLights.buf != *lfc2.exteriorLights.buf) {
+//                            return *lfc1.exteriorLights.buf < *lfc2.exteriorLights.buf;
+//                        }
+//                        if (lfc1.pathHistory.list.count != lfc2.pathHistory.list.count) {
+//                            return lfc1.pathHistory.list.count < lfc2.pathHistory.list.count;
+//                        }
+//                        for (int i = 0; i < lfc1.pathHistory.list.count; i++) {
+//                            PathPoint *pathPoint1 = lfc1.pathHistory.list.array[i];
+//                            PathPoint *pathPoint2 = lfc1.pathHistory.list.array[i];
+//                            {
+//                                DeltaReferencePosition drp1 = pathPoint1->pathPosition;
+//                                DeltaReferencePosition drp2 = pathPoint2->pathPosition;
+//                                if (drp1.deltaAltitude != drp2.deltaAltitude) {
+//                                    return drp1.deltaAltitude < drp2.deltaAltitude;
+//                                } else if (drp1.deltaLatitude != drp2.deltaLatitude) {
+//                                    return drp1.deltaLatitude < drp2.deltaLatitude;
+//                                } else if (drp1.deltaLongitude != drp2.deltaLongitude) {
+//                                    return drp1.deltaLongitude < drp2.deltaLongitude;
+//                                }
+//                            }
+//                            {
+//                                PathDeltaTime_t *pathDeltaTime1 = pathPoint1->pathDeltaTime;
+//                                PathDeltaTime_t *pathDeltaTime2 = pathPoint2->pathDeltaTime;
+//                                if (pathDeltaTime1 == nullptr && pathDeltaTime2 != nullptr ||
+//                                    pathDeltaTime1 != nullptr && pathDeltaTime2 == nullptr) {
+//                                    return pathDeltaTime1 < pathDeltaTime2;
+//                                }
+//                                if (*pathDeltaTime1 != *pathDeltaTime2) {
+//                                    return *pathDeltaTime1 < *pathDeltaTime2;
+//                                }
+//                            }
+//                        }
+//                    }
+//                }
+//            }
+//            {
+//                SpecialVehicleContainer *specialVehicleContainer1 = cpm1.cpmParameters.specialVehicleContainer;
+//                SpecialVehicleContainer *specialVehicleContainer2 = cpm2.cpmParameters.specialVehicleContainer;
+//                if (specialVehicleContainer1 == nullptr && specialVehicleContainer2 != nullptr ||
+//                    specialVehicleContainer1 != nullptr && specialVehicleContainer2 == nullptr) {
+//                    return specialVehicleContainer1 < specialVehicleContainer2;
+//                }
+//                if (specialVehicleContainer1 != nullptr) {
+//                    if (specialVehicleContainer1->present != specialVehicleContainer2->present) {
+//                        return specialVehicleContainer1->present < specialVehicleContainer2->present;
+//                    }
+//                }
+//            }
+        }
+        return false;
+    }
+
     bool camCompPtr(const std::shared_ptr<vanetza::asn1::Cam> &ptr1, const std::shared_ptr<vanetza::asn1::Cam> &ptr2) {
         return camComp((*ptr1), (*ptr2));
+    }
+    bool cpmCompPtr(const std::shared_ptr<vanetza::asn1::Cpm> &ptr1, const std::shared_ptr<vanetza::asn1::Cpm> &ptr2) {
+        return cpmComp((*ptr1), (*ptr2));
     }
 
     bool camEquiv(const vanetza::asn1::Cam &message1, const vanetza::asn1::Cam &message2) {
         return !camComp(message1, message2) && !camComp(message1, message2);
+    }
+    bool cpmEquiv(const vanetza::asn1::Cpm &message1, const vanetza::asn1::Cpm &message2) {
+        return !cpmComp(message1, message2) && !cpmComp(message1, message2);
     }
 
 

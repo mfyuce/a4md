@@ -93,6 +93,38 @@ namespace artery {
         return 1;
     }
 
+
+    double CatchChecks::ProximityPlausibilityCheck(const Position &senderPosition, const Position &receiverPosition,
+                                                   const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &surroundingCpmObjects,
+                                                   const StationID_t &senderStationId) {
+        Position::value_type deltaDistance = distance(senderPosition, receiverPosition);
+        double deltaAngle = calculateHeadingAngle(
+                Position(senderPosition.x - receiverPosition.x, senderPosition.y - receiverPosition.y));
+        if (deltaDistance.value() < detectionParameters->maxProximityRangeL) {
+            if (deltaDistance.value() < detectionParameters->maxProximityRangeW * 2 ||
+                (deltaAngle < 90 && deltaDistance.value() <
+                                    (detectionParameters->maxProximityRangeW / cos((90 - deltaAngle) * PI / 180)))) {
+                Position::value_type minimumDistance = Position::value_type::from_value(9999);
+
+                for (const auto &cam: surroundingCpmObjects) {
+                    if ((*cam)->header.stationID != senderStationId) {
+                        Position::value_type currentDistance = distance(senderPosition, convertReferencePosition(
+                                (*cam)->cpm.cpmParameters.managementContainer.referencePosition, mSimulationBoundary,
+                                mTraciAPI));
+                        if (currentDistance < minimumDistance) {
+                            minimumDistance = currentDistance;
+                        }
+                    }
+                }
+                if (minimumDistance.value() < 2 * detectionParameters->maxProximityDistance) {
+                    return 1 - minimumDistance.value() / (2 * detectionParameters->maxProximityDistance);
+                } else {
+                    return 0;
+                }
+            }
+        }
+        return 1;
+    }
     double
     CatchChecks::RangePlausibilityCheck(const Position &senderPosition, const std::vector<Position> &senderEllipse,
                                         const double &senderEllipseRadius,
@@ -320,6 +352,26 @@ namespace artery {
         return intersectionSum / totalCount;
     }
 
+    double CatchChecks::IntersectionCheck(const std::vector<Position> &receiverEllipse,
+                                          const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &relevantCpms,
+                                          const std::vector<Position> &senderEllipse,
+                                          const double &deltaTime) {
+        int totalCount = 1;
+        double intersectionSum = 1.0 - (intersectionFactor(senderEllipse, receiverEllipse) *
+                                        ((detectionParameters->maxIntersectionDeltaTime - deltaTime) /
+                                         detectionParameters->maxIntersectionDeltaTime));
+        for (const auto &cam: relevantCpms) {
+            Position camPosition = convertReferencePosition(
+                    (*cam)->cpm.cpmParameters.managementContainer.referencePosition, mSimulationBoundary, mTraciAPI);
+            PosConfidenceEllipse_t camPositionConfidence =
+                    (*cam)->cpm.cpmParameters.managementContainer.referencePosition.positionConfidenceEllipse;
+            std::vector<Position> camPositionEllipse = createEllipse(camPosition, camPositionConfidence);
+            totalCount++;
+            intersectionSum += intersectionFactor(senderEllipse, camPositionEllipse);
+        }
+        return intersectionSum / totalCount;
+    }
+
     double CatchChecks::SuddenAppearanceCheck(const Position &senderPosition,
                                               const PosConfidenceEllipse_t &senderConfidenceEllipse,
                                               const Position &receiverPosition,
@@ -450,6 +502,117 @@ namespace artery {
         return std::make_shared<CheckResult>(result);
     }
 
+    std::shared_ptr<CheckResult> CatchChecks::checkCPM(const VehicleDataProvider *receiverVDP,
+                                                       const std::vector<Position> &receiverVehicleOutline,
+                                                       const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm,
+                                                       const std::shared_ptr<vanetza::asn1::Cpm> &lastCpm,
+                                                       const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &surroundingCpmObjects) {
+        const Position &receiverPosition = convertReferencePosition(receiverVDP->approximateReferencePosition(),
+                                                                    mSimulationBoundary, mTraciAPI);
+        const PosConfidenceEllipse_t &receiverPositionConfidence =
+                receiverVDP->approximateReferencePosition().positionConfidenceEllipse;
+        const std::vector<Position> receiverPositionEllipse = createEllipse(receiverPosition,
+                                                                            receiverPositionConfidence);
+        double receiverEllipseRadius = (double) receiverPositionConfidence.semiMajorConfidence / 100;
+
+        Position currentCpmPosition = convertReferencePosition(
+                (*currentCpm)->cpm.cpmParameters.managementContainer.referencePosition, mSimulationBoundary, mTraciAPI);
+        PosConfidenceEllipse_t currentCpmPositionConfidence =
+                (*currentCpm)->cpm.cpmParameters.managementContainer.referencePosition.positionConfidenceEllipse;
+        std::vector<Position> currentCpmPositionEllipse = createEllipse(currentCpmPosition,
+                                                                        currentCpmPositionConfidence);
+        double currentCpmEllipseRadius = (double) currentCpmPositionConfidence.semiMajorConfidence / 100;
+
+        auto currentHfc =
+                (*currentCpm)->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer;
+        double currentCpmSpeed = (double) currentHfc.speed.speedValue / 100.0;
+        double currentCpmSpeedConfidence = (double) currentHfc.speed.speedConfidence / 100.0;
+        double currentCpmAcceleration =
+                (double) currentHfc.longitudinalAcceleration->longitudinalAccelerationValue / 10.0;
+        double currentCpmHeading = (double) currentHfc.heading.headingValue / 10.0;
+        double currentCpmHeadingConfidence = (double) currentHfc.heading.headingConfidence / 10.0;
+        Position currentCpmSpeedVector = getVector(currentCpmSpeed, currentCpmHeading);
+        Position currentCpmAccelerationVector = getVector(currentCpmAcceleration, currentCpmHeading);
+
+        CheckResult result;
+
+        double camDeltaTime;
+        if (!mCheckingFirstCpm) {
+            camDeltaTime = (double) (uint16_t) ((*currentCpm)->cpm.generationDeltaTime -
+                                                (*lastCpm)->cpm.generationDeltaTime);
+        }
+
+        if (mCheckableDetectionLevels[detectionLevels::Level1]) {
+            result.speedPlausibility =
+                    SpeedPlausibilityCheck(currentCpmSpeed, currentCpmSpeedConfidence);
+        }
+        if (mCheckableDetectionLevels[detectionLevels::Level2] && !mCheckingFirstCpm) {
+            result.consistencyIsChecked = true;
+            result.positionConsistency =
+                    PositionConsistencyCheck(currentCpmPosition, currentCpmPositionEllipse, currentCpmEllipseRadius,
+                                             mLastCpmPosition, mLastCpmPositionEllipse, mLastCpmEllipseRadius,
+                                             camDeltaTime);
+            result.speedConsistency =
+                    SpeedConsistencyCheck(currentCpmSpeed, currentCpmSpeedConfidence, mLastCpmSpeed,
+                                          mLastCpmSpeedConfidence, camDeltaTime);
+
+
+            result.positionSpeedConsistency =
+                    PositionSpeedConsistencyCheck(currentCpmPosition, currentCpmPositionEllipse,
+                                                  currentCpmEllipseRadius,
+                                                  mLastCpmPosition, mLastCpmPositionEllipse, mLastCpmEllipseRadius,
+                                                  currentCpmSpeed, currentCpmSpeedConfidence,
+                                                  mLastCpmSpeed, mLastCpmSpeedConfidence, camDeltaTime);
+            result.positionSpeedMaxConsistency =
+                    PositionSpeedMaxConsistencyCheck(currentCpmPosition, currentCpmPositionConfidence, mLastCpmPosition,
+                                                     mLastCpmPositionConfidence, currentCpmSpeed,
+                                                     currentCpmSpeedConfidence, mLastCpmSpeed, mLastCpmSpeedConfidence,
+                                                     camDeltaTime);
+            result.positionHeadingConsistency =
+                    PositionHeadingConsistencyCheck(currentCpmHeading, currentCpmHeadingConfidence, currentCpmPosition,
+                                                    currentCpmPositionConfidence, mLastCpmPosition,
+                                                    mLastCpmPositionConfidence, currentCpmSpeed,
+                                                    currentCpmSpeedConfidence, camDeltaTime);
+            result.frequency =
+                    FrequencyCheck(camDeltaTime);
+            KalmanChecks(currentCpmPosition, currentCpmPositionConfidence, currentCpmSpeed,
+                         currentCpmSpeedVector, currentCpmSpeedConfidence, currentCpmAcceleration,
+                         currentCpmAccelerationVector, currentCpmHeading, mLastCpmPosition,
+                         mLastCpmSpeedVector, camDeltaTime, result);
+        }
+        if (mCheckableDetectionLevels[detectionLevels::Level3]) {
+            result.positionPlausibility =
+                    PositionPlausibilityCheck(currentCpmPosition, currentCpmPositionConfidence, currentCpmSpeed,
+                                              currentCpmSpeedConfidence);
+            if (!mCheckingFirstCpm) {
+                result.intersection =
+                        IntersectionCheck(receiverPositionEllipse, surroundingCpmObjects, currentCpmPositionEllipse,
+                                          camDeltaTime);
+            }
+        }
+        if (mCheckableDetectionLevels[detectionLevels::Level4]) {
+            result.proximityPlausibility =
+                    ProximityPlausibilityCheck(currentCpmPosition, receiverPosition, surroundingCpmObjects,
+                                               (*currentCpm)->header.stationID);
+            result.rangePlausibility =
+                    RangePlausibilityCheck(currentCpmPosition, currentCpmPositionEllipse, currentCpmEllipseRadius,
+                                           receiverPosition, receiverPositionEllipse, receiverEllipseRadius);
+            if (mCheckingFirstCpm) {
+                result.suddenAppearance =
+                        SuddenAppearanceCheck(currentCpmPosition, currentCpmPositionConfidence, receiverPosition,
+                                              receiverPositionConfidence);
+            }
+        }
+        mCheckingFirstCpm = false;
+        mLastCpmPosition = currentCpmPosition;
+        mLastCpmPositionConfidence = currentCpmPositionConfidence;
+        mLastCpmPositionEllipse = currentCpmPositionEllipse;
+        mLastCpmEllipseRadius = currentCpmEllipseRadius;
+        mLastCpmSpeed = currentCpmSpeed;
+        mLastCpmSpeedConfidence = currentCpmSpeedConfidence;
+        mLastCpmSpeedVector = currentCpmSpeedVector;
+        return std::make_shared<CheckResult>(result);
+    }
     std::bitset<16> CatchChecks::checkSemanticLevel1Report(const std::shared_ptr<vanetza::asn1::Cam> &currentCam) {
         CheckResult result;
 
@@ -462,6 +625,17 @@ namespace artery {
         return mThresholdFusion->checkForReport(result)[detectionLevels::Level1];
     }
 
+    std::bitset<16> CatchChecks::checkSemanticLevel1Report(const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm) {
+        CheckResult result;
+
+        auto currentHfc =
+                (*currentCpm)->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer;
+        double currentCpmSpeed = (double) currentHfc.speed.speedValue / 100.0;
+        double currentCpmSpeedConfidence = (double) currentHfc.speed.speedConfidence / 100.0;
+
+        result.speedPlausibility = SpeedPlausibilityCheck(currentCpmSpeed, currentCpmSpeedConfidence);
+        return mThresholdFusion->checkForReport(result)[detectionLevels::Level1];
+    }
     std::bitset<16> CatchChecks::checkSemanticLevel2Report(const std::shared_ptr<vanetza::asn1::Cam> &currentCam,
                                                            const std::shared_ptr<vanetza::asn1::Cam> &lastCam) {
         CheckResult result;
@@ -542,6 +716,85 @@ namespace artery {
 
     }
 
+    std::bitset<16> CatchChecks::checkSemanticLevel2Report(const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm,
+                                                           const std::shared_ptr<vanetza::asn1::Cpm> &lastCpm) {
+        CheckResult result;
+
+        Position currentCpmPosition = convertReferencePosition(
+                (*currentCpm)->cpm.cpmParameters.managementContainer.referencePosition, mSimulationBoundary, mTraciAPI);
+        PosConfidenceEllipse_t currentCpmPositionConfidence =
+                (*currentCpm)->cpm.cpmParameters.managementContainer.referencePosition.positionConfidenceEllipse;
+        std::vector<Position> currentCpmPositionEllipse = createEllipse(currentCpmPosition,
+                                                                        currentCpmPositionConfidence);
+        double currentCpmEllipseRadius = (double) currentCpmPositionConfidence.semiMajorConfidence / 100;
+
+        auto currentCpmHfc =
+                (*currentCpm)->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer;
+        double currentCpmSpeed = (double) currentCpmHfc.speed.speedValue / 100.0;
+        double currentCpmSpeedConfidence = (double) currentCpmHfc.speed.speedConfidence / 100.0;
+        double currentCpmAcceleration =
+                (double) currentCpmHfc.longitudinalAcceleration->longitudinalAccelerationValue / 10.0;
+        double currentCpmHeading = (double) currentCpmHfc.heading.headingValue / 10;
+        double currentCpmHeadingConfidence = (double) currentCpmHfc.heading.headingConfidence / 10.0;
+        Position currentCpmSpeedVector = getVector(currentCpmSpeed, currentCpmHeading);
+        Position currentCpmAccelerationVector = getVector(currentCpmAcceleration, currentCpmHeading);
+
+        Position lastCpmPosition = convertReferencePosition(
+                (*lastCpm)->cpm.cpmParameters.managementContainer.referencePosition, mSimulationBoundary, mTraciAPI);
+        PosConfidenceEllipse_t lastCpmPositionConfidence =
+                (*lastCpm)->cpm.cpmParameters.managementContainer.referencePosition.positionConfidenceEllipse;
+        std::vector<Position> lastCpmPositionEllipse = createEllipse(lastCpmPosition,
+                                                                     lastCpmPositionConfidence);
+        double lastCpmEllipseRadius = (double) lastCpmPositionConfidence.semiMajorConfidence / 100;
+
+        auto lastCpmHfc =
+                (*lastCpm)->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer;
+        double lastCpmSpeed = (double) lastCpmHfc.speed.speedValue / 100.0;
+        double lastCpmSpeedConfidence = (double) lastCpmHfc.speed.speedConfidence / 100.0;
+        double lastCpmAcceleration =
+                (double) lastCpmHfc.longitudinalAcceleration->longitudinalAccelerationValue / 10.0;
+        double lastCpmHeading = (double) lastCpmHfc.heading.headingValue / 10;
+        Position lastCpmSpeedVector = getVector(lastCpmSpeed, lastCpmHeading);
+        Position lastCpmAccelerationVector = getVector(lastCpmAcceleration, currentCpmHeading);
+
+        auto camDeltaTime = (double) (uint16_t) ((*currentCpm)->cpm.generationDeltaTime -
+                                                 (*lastCpm)->cpm.generationDeltaTime);
+        result.consistencyIsChecked = true;
+
+        result.positionConsistency =
+                PositionConsistencyCheck(currentCpmPosition, currentCpmPositionEllipse, currentCpmEllipseRadius,
+                                         lastCpmPosition, lastCpmPositionEllipse, lastCpmEllipseRadius,
+                                         camDeltaTime);
+        result.speedConsistency =
+                SpeedConsistencyCheck(currentCpmSpeed, currentCpmSpeedConfidence, lastCpmSpeed,
+                                      lastCpmSpeedConfidence, camDeltaTime);
+
+
+        result.positionSpeedConsistency =
+                PositionSpeedConsistencyCheck(currentCpmPosition, currentCpmPositionEllipse,
+                                              currentCpmEllipseRadius,
+                                              lastCpmPosition, lastCpmPositionEllipse, lastCpmEllipseRadius,
+                                              currentCpmSpeed, currentCpmSpeedConfidence,
+                                              lastCpmSpeed, lastCpmSpeedConfidence, camDeltaTime);
+        result.positionSpeedMaxConsistency =
+                PositionSpeedMaxConsistencyCheck(currentCpmPosition, currentCpmPositionConfidence, lastCpmPosition,
+                                                 lastCpmPositionConfidence, currentCpmSpeed,
+                                                 currentCpmSpeedConfidence, lastCpmSpeed, lastCpmSpeedConfidence,
+                                                 camDeltaTime);
+        result.positionHeadingConsistency =
+                PositionHeadingConsistencyCheck(currentCpmHeading, currentCpmHeadingConfidence, currentCpmPosition,
+                                                currentCpmPositionConfidence, lastCpmPosition,
+                                                lastCpmPositionConfidence, currentCpmSpeed,
+                                                currentCpmSpeedConfidence, camDeltaTime);
+        KalmanChecks(currentCpmPosition, currentCpmPositionConfidence, currentCpmSpeed,
+                     currentCpmSpeedVector, currentCpmSpeedConfidence, currentCpmAcceleration,
+                     currentCpmAccelerationVector, currentCpmHeading, lastCpmPosition,
+                     lastCpmSpeedVector, camDeltaTime, result);
+        result.frequency = BaseChecks::FrequencyCheck(camDeltaTime);
+
+        return mThresholdFusion->checkForReport(result)[detectionLevels::Level2];
+
+    }
     std::bitset<16> CatchChecks::checkSemanticLevel3Report(const std::shared_ptr<vanetza::asn1::Cam> &currentCam,
                                                            const std::vector<std::shared_ptr<vanetza::asn1::Cam>> &neighbourCams) {
         CheckResult result;
@@ -625,5 +878,78 @@ namespace artery {
         mThresholdFusion = new ThresholdFusion(misbehaviorThreshold);
     }
 
+    std::bitset<16> CatchChecks::checkSemanticLevel3Report(const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm,
+                                                           const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &neighbourCpms) {
+        CheckResult result;
+
+        Position currentCpmPosition = convertReferencePosition(
+                (*currentCpm)->cpm.cpmParameters.managementContainer.referencePosition, mSimulationBoundary, mTraciAPI);
+        PosConfidenceEllipse_t currentCpmPositionConfidence =
+                (*currentCpm)->cpm.cpmParameters.managementContainer.referencePosition.positionConfidenceEllipse;
+        std::vector<Position> currentCpmPositionEllipse = createEllipse(currentCpmPosition,
+                                                                        currentCpmPositionConfidence);
+
+        auto currentCpmHfc =
+                (*currentCpm)->cpm.cpmParameters.stationDataContainer->choice.originatingVehicleContainer;
+        double currentCpmSpeed = (double) currentCpmHfc.speed.speedValue / 100.0;
+        double currentCpmSpeedConfidence = (double) currentCpmHfc.speed.speedConfidence / 100.0;
+        double currentCpmHeading = (double) currentCpmHfc.heading.headingValue / 10;
+        double currentCpmVehicleLength = (double) currentCpmHfc.vehicleLength->vehicleLengthValue / 10;
+        double currentCpmVehicleWidth = (double) (long)currentCpmHfc.vehicleWidth / 10;
+
+        std::vector<Position> currentCpmOutline = getVehicleOutline(currentCpmPosition,
+                                                                    Angle::from_degree(currentCpmHeading),
+                                                                    currentCpmVehicleLength,
+                                                                    currentCpmVehicleWidth);
+        auto camDeltaTime = (double) (uint16_t) ((uint16_t) countTaiMilliseconds(mTimer->getTimeFor(simTime())) -
+                                                 (*currentCpm)->cpm.generationDeltaTime);
+        result.positionPlausibility =
+                PositionPlausibilityCheck(currentCpmPosition, currentCpmPositionConfidence, currentCpmSpeed,
+                                          currentCpmSpeedConfidence);
+        result.intersection =
+                IntersectionCheck(currentCpmOutline, neighbourCpms, currentCpmPositionEllipse,
+                                  camDeltaTime);
+
+        return mThresholdFusion->checkForReport(result)[detectionLevels::Level3];
+    }
+
+    std::bitset<16>
+    CatchChecks::checkSemanticLevel4Report(const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm,
+                                           const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &neighbourCpms,
+                                           const SenderInfoContainer_t &senderInfo) {
+        CheckResult result;
+        Position receiverPosition = convertReferencePosition(senderInfo.referencePosition, mSimulationBoundary,
+                                                             mTraciAPI);
+        const PosConfidenceEllipse_t &receiverPositionConfidence = senderInfo.referencePosition.positionConfidenceEllipse;
+        const std::vector<Position> receiverPositionEllipse = createEllipse(receiverPosition,
+                                                                            receiverPositionConfidence);
+        double receiverEllipseRadius = (double) receiverPositionConfidence.semiMajorConfidence / 100;
+        Position currentCpmPosition = convertReferencePosition(
+                (*currentCpm)->cpm.cpmParameters.managementContainer.referencePosition, mSimulationBoundary, mTraciAPI);
+        PosConfidenceEllipse_t currentCpmPositionConfidence =
+                (*currentCpm)->cpm.cpmParameters.managementContainer.referencePosition.positionConfidenceEllipse;
+        std::vector<Position> currentCpmPositionEllipse = createEllipse(currentCpmPosition,
+                                                                        currentCpmPositionConfidence);
+        double currentCpmEllipseRadius = (double) currentCpmPositionConfidence.semiMajorConfidence / 100;
+
+        result.proximityPlausibility = ProximityPlausibilityCheck(currentCpmPosition, receiverPosition,
+                                                                  neighbourCpms, (*currentCpm)->header.stationID);
+        result.rangePlausibility =
+                RangePlausibilityCheck(currentCpmPosition, currentCpmPositionEllipse, currentCpmEllipseRadius,
+                                       receiverPosition, receiverPositionEllipse, receiverEllipseRadius);
+
+        return mThresholdFusion->checkForReport(result)[detectionLevels::Level4];
+    }
+
+    CatchChecks::CatchChecks(std::shared_ptr<const traci::API>
+                             traciAPI, GlobalEnvironmentModel *globalEnvironmentModel,
+                             DetectionParameters *detectionParameters,
+                             const Timer *timer,
+                             const std::map<detectionLevels::DetectionLevels, bool> &checkableDetectionLevels,
+                             const std::shared_ptr<vanetza::asn1::Cpm> &message)
+            : BaseChecks(std::move(traciAPI), globalEnvironmentModel, detectionParameters, timer,
+                         checkableDetectionLevels, message) {
+        mThresholdFusion = nullptr;
+    }
 
 } // namespace artery

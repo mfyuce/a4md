@@ -30,6 +30,12 @@ namespace artery {
                        const std::shared_ptr<vanetza::asn1::Cam> &message,
                        const std::map<detectionLevels::DetectionLevels, bool> &checkableDetectionLevels);
 
+        DetectedSender(const std::shared_ptr<const traci::API> &traciAPI,
+                       GlobalEnvironmentModel *globalEnvironmentModel,
+                       DetectionParameters *detectionParameters,
+                       const Timer *timer,
+                       const std::shared_ptr<vanetza::asn1::Cpm> &message,
+                       const std::map<detectionLevels::DetectionLevels, bool> &checkableDetectionLevels);
 
         ~DetectedSender();
 
@@ -38,6 +44,10 @@ namespace artery {
                                                     const VehicleDataProvider *receiverVDP,
                                                     const std::vector<Position> &receiverVehicleOutline,
                                                     const std::vector<std::shared_ptr<vanetza::asn1::Cam>> &surroundingCamObjects);
+        std::shared_ptr<CheckResult> addAndCheckCpm(const std::shared_ptr<vanetza::asn1::Cpm> &message,
+                                                    const VehicleDataProvider *receiverVDP,
+                                                    const std::vector<Position> &receiverVehicleOutline,
+                                                    const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &surroundingCpmObjects);
 
         StationID_t getStationId() const { return mStationId; };
 
@@ -47,6 +57,11 @@ namespace artery {
             return cams;
         };
 
+        std::vector<std::shared_ptr<vanetza::asn1::Cpm>> getCpmVector() const {
+            std::vector<std::shared_ptr<vanetza::asn1::Cpm>> cpms{cpmList.begin(), cpmList.end()};
+            cpms.pop_back();
+            return cpms;
+        };
 
         bool hasBeenReported() const { return mHasBeenReported; };
 
@@ -66,10 +81,13 @@ namespace artery {
 
         std::list<std::shared_ptr<vanetza::asn1::Cam>> camList;
         std::shared_ptr<vanetza::asn1::Cam> latestCam;
+        std::list<std::shared_ptr<vanetza::asn1::Cpm>> cpmList;
+        std::shared_ptr<vanetza::asn1::Cpm> latestCpm;
 
     private:
         BaseChecks *baseChecks;
         int mCamsArraySize;
+        int mCpmsArraySize;
 
         Position mPosition;
         StationID_t mStationId;

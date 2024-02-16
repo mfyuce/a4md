@@ -1,6 +1,6 @@
 package artery.application.misbehavior.authority;
 
-simple MisbehaviorAuthority
+simple MisbehaviorAuthorityCpm
 {
     parameters:
 		string datetime;

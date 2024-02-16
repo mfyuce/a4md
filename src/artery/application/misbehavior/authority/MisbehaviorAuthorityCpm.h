@@ -2,14 +2,14 @@
 // Created by bastian on 05.07.21.
 //
 
-#ifndef ARTERY_MISBEHAVIORAUTHORITY_H
-#define ARTERY_MISBEHAVIORAUTHORITY_H
+#ifndef ARTERY_MISBEHAVIORAUTHORITYCPM_H
+#define ARTERY_MISBEHAVIORAUTHORITYCPM_H
 
 #include <curl/curl.h>
 #include <omnetpp.h>
 //#include <rapidjson/document.h>
 #include <vanetza/asn1/misbehavior_report.hpp>
-#include <vanetza/asn1/cam.hpp>
+//#include <vanetza/asn1/cam.hpp>
 #include "artery/envmod/GlobalEnvironmentModel.h"
 #include "artery/application/Timer.h"
 #include "artery/application/misbehavior/util/MisbehaviorTypes.h"
@@ -19,7 +19,8 @@
 #include "artery/application/misbehavior/report/ReportedPseudonym.h"
 #include "artery/application/misbehavior/report/ReportingPseudonym.h"
 #include "artery/application/misbehavior/report/Report.h"
-#include "artery/application/misbehavior/MisbehaviorCaService.h"
+//#include "artery/application/misbehavior/MisbehaviorCaService.h"
+#include "artery/application/misbehavior/MisbehaviorCpmService.h"
 #include "artery/application/misbehavior/util/HelperFunctions.h"
 #include "artery/application/misbehavior/fusion/BaseFusion.h"
 #include <artery/application/misbehavior/checks/BaseChecks.h>
@@ -42,11 +43,11 @@ namespace artery {
     }
 
 
-    class MisbehaviorAuthority : public omnetpp::cSimpleModule, public omnetpp::cListener {
+    class MisbehaviorAuthorityCpm : public omnetpp::cSimpleModule, public omnetpp::cListener {
     public:
-        MisbehaviorAuthority();
+        MisbehaviorAuthorityCpm();
 
-        ~MisbehaviorAuthority();
+        ~MisbehaviorAuthorityCpm();
 
         void initialize() override;
 
@@ -116,7 +117,8 @@ namespace artery {
         omnetpp::cHistogram statsValidLevel2ReportEvidenceCount;
         omnetpp::cHistogram statsInvalidLevel2ReportEvidenceCount;
 
-        void processMisbehaviorAnnouncement(const std::vector<StationID_t>& stationIds, MisbehaviorCaService *misbehaviourCaService);
+//        void processMisbehaviorAnnouncement(const std::vector<StationID_t>& stationIds, MisbehaviorCaService *misbehaviourCaService);
+        void processMisbehaviorAnnouncement(const std::vector<StationID_t>& stationIds, MisbehaviorCpmService *misbehaviourCpmService);
 
         void processReport(const std::shared_ptr<Report> &report);
 
@@ -157,4 +159,4 @@ namespace artery {
     };
 } // namespace artery
 
-#endif //ARTERY_MISBEHAVIORAUTHORITY_H
+#endif //ARTERY_MISBEHAVIORAUTHORITYCPM_H

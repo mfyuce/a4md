@@ -25,6 +25,10 @@ namespace artery {
                     DetectionParameters *detectionParameters, const Timer *timer,
                     const std::map<detectionLevels::DetectionLevels, bool> &checkableDetectionLevels,
                     const std::shared_ptr<vanetza::asn1::Cam> &message);
+        CatchChecks(std::shared_ptr<const traci::API> traciAPI, GlobalEnvironmentModel *globalEnvironmentModel,
+                    DetectionParameters *detectionParameters, const Timer *timer,
+                    const std::map<detectionLevels::DetectionLevels, bool> &checkableDetectionLevels,
+                    const std::shared_ptr<vanetza::asn1::Cpm> &message);
 
         CatchChecks(std::shared_ptr<const traci::API> traciAPI, GlobalEnvironmentModel *globalEnvironmentModel,
                     DetectionParameters *detectionParameters, double misbehaviorThreshold, const Timer *timer);
@@ -34,18 +38,31 @@ namespace artery {
                                               const std::shared_ptr<vanetza::asn1::Cam> &currentCam,
                                               const std::shared_ptr<vanetza::asn1::Cam> &lastCam,
                                               const std::vector<std::shared_ptr<vanetza::asn1::Cam>> &surroundingCamObjects) override;
+        std::shared_ptr<CheckResult> checkCPM(const VehicleDataProvider *receiverVDP,
+                                              const std::vector<Position> &receiverVehicleOutline,
+                                              const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm,
+                                              const std::shared_ptr<vanetza::asn1::Cpm> &lastCpm,
+                                              const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &surroundingCpmObjects) override;
 
         std::bitset<16> checkSemanticLevel1Report(const std::shared_ptr<vanetza::asn1::Cam> &currentCam) override;
+        std::bitset<16> checkSemanticLevel1Report(const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm) override;
 
-        std::bitset<16> checkSemanticLevel2Report(const std::shared_ptr<vanetza::asn1::Cam> &currentCam,
+        std::bitset<16> checkSemanticLevel2Report(const std::shared_ptr<vanetza::asn1::Cam> &currentCpm,
                                                   const std::shared_ptr<vanetza::asn1::Cam> &lastCam) override;
+        std::bitset<16> checkSemanticLevel2Report(const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm,
+                                                  const std::shared_ptr<vanetza::asn1::Cpm> &lastCpm) override;
 
         std::bitset<16> checkSemanticLevel3Report(const std::shared_ptr<vanetza::asn1::Cam> &currentCam,
                                                   const std::vector<std::shared_ptr<vanetza::asn1::Cam>> &neighbourCams) override;
+        std::bitset<16> checkSemanticLevel3Report(const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm,
+                                                  const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &neighbourCpms) override;
 
         std::bitset<16>
         checkSemanticLevel4Report(const std::shared_ptr<vanetza::asn1::Cam> &currentCam,
                                   const std::vector<std::shared_ptr<vanetza::asn1::Cam>> &neighbourCams,
+                                  const SenderInfoContainer_t &senderInfo) override;std::bitset<16>
+        checkSemanticLevel4Report(const std::shared_ptr<vanetza::asn1::Cpm> &currentCpm,
+                                  const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &neighbourCpms,
                                   const SenderInfoContainer_t &senderInfo) override;
 
     protected:
@@ -57,6 +74,9 @@ namespace artery {
 
         double ProximityPlausibilityCheck(const Position &senderPosition, const Position &receiverPosition,
                                           const std::vector<std::shared_ptr<vanetza::asn1::Cam>> &surroundingCamObjects,
+                                          const StationID_t &senderStationId);
+        double ProximityPlausibilityCheck(const Position &senderPosition, const Position &receiverPosition,
+                                          const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &surroundingCpmObjects,
                                           const StationID_t &senderStationId);
 
         double RangePlausibilityCheck(const Position &senderPosition, const std::vector<Position> &senderEllipse,
@@ -101,6 +121,13 @@ namespace artery {
 
         double IntersectionCheck(const std::vector<Position> &receiverEllipse,
                                  const std::vector<std::shared_ptr<vanetza::asn1::Cam>> &relevantCams,
+                                 const std::vector<Position> &senderEllipse, const double &deltaTime);
+        double IntersectionCheck(const std::vector<Position> &receiverEllipse,
+                                 const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &relevantCpms,
+                                 const std::vector<Position> &senderEllipse, const double &deltaTime);
+
+        double IntersectionCheck(const std::vector<Position> &receiverEllipse,
+                                 const std::vector<std::shared_ptr<vanetza::asn1::Cpm>> &relevantCpms,
                                  const std::vector<Position> &senderEllipse, const double &deltaTime);
 
         double SuddenAppearanceCheck(const Position &senderPosition,

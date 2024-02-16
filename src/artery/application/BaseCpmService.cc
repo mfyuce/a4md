@@ -188,19 +188,53 @@ namespace artery {
 
     vanetza::asn1::Cpm
     BaseCpmService::createCollectivePerceptionMessage(uint16_t genDeltaTime) {
-        vanetza::asn1::Cpm cpm;
-
-        auto object = vanetza::asn1::allocate<PerceivedObject_t>(); //this fill the struct PerceivedObject with basic info
-//        auto perception = vanetza::asn1::allocate<CollectivePerceptionMessage>();
+        vanetza::asn1::Cpm message;
 
         PerceivedObject *arrayobjeto[2];
 
 //        cpm->cpm.cpmParameters.perceptionData = vanetza::asn1::allocate<CpmParameters::CpmParameters__perceptionData>();
+        ItsPduHeader_t &header = (*message).header;
+        header.protocolVersion=2;
+        header.messageID=ItsPduHeader__messageID_cpm;
+        header.stationID= mVehicleDataProvider->station_id();
 
-        cpm->header.protocolVersion=2;
-        cpm->header.messageID=ItsPduHeader__messageID_cpm;
-        cpm->header.stationID=1;
-        cpm->cpm.cpmParameters.managementContainer.stationType=2;
+        auto &cpm = (*message).cpm;
+        cpm.cpmParameters.managementContainer.stationType=StationType_passengerCar;
+        cpm.generationDeltaTime = genDeltaTime * GenerationDeltaTime_oneMilliSec;
+
+        auto &basic = cpm.cpmParameters.managementContainer;
+        basic.stationType = StationType_passengerCar;
+        basic.referencePosition = mVehicleDataProvider->approximateReferencePosition();
+        cpm.cpmParameters.stationDataContainer = {};
+        auto &hfc = *cpm.cpmParameters.stationDataContainer;
+
+        hfc.present = StationDataContainer_PR_originatingVehicleContainer;
+
+        auto &bvc = hfc.choice.originatingVehicleContainer;
+        bvc.heading = mVehicleDataProvider->approximateHeading();
+        bvc.speed = mVehicleDataProvider->approximateSpeed();
+        bvc.driveDirection = mVehicleDataProvider->speed().value() >= 0.0 ?
+                             DriveDirection_forward : DriveDirection_backward;
+        auto la = mVehicleDataProvider->approximateAcceleration();
+        bvc.longitudinalAcceleration = {};
+        bvc.longitudinalAcceleration->longitudinalAccelerationValue = la.longitudinalAccelerationValue;
+        bvc.longitudinalAcceleration->longitudinalAccelerationConfidence = la.longitudinalAccelerationConfidence;
+//        bvc.curvature.curvatureValue =
+//                abs(mVehicleDataProvider->curvature() / vanetza::units::reciprocal_metre) * 10000.0;
+//        if (bvc.curvature.curvatureValue >= 1023) {
+//            bvc.curvature.curvatureValue = 1023;
+//        }
+//        bvc.curvature.curvatureConfidence = CurvatureConfidence_unavailable;
+//        bvc.curvatureCalculationMode = CurvatureCalculationMode_yawRateUsed;
+        bvc.yawRate->yawRateValue =
+                round(mVehicleDataProvider->yaw_rate(), degree_per_second) * YawRateValue_degSec_000_01ToLeft * 100.0;
+        if (bvc.yawRate->yawRateValue < -32766 || bvc.yawRate->yawRateValue > 32766) {
+            bvc.yawRate->yawRateValue = YawRateValue_unavailable;
+        }
+        bvc.vehicleLength->vehicleLengthValue = mVehicleLength;
+        bvc.vehicleLength->vehicleLengthConfidenceIndication =
+                VehicleLengthConfidenceIndication_noTrailerPresent;
+        bvc.vehicleWidth = &mVehicleWidth;
 
         for(int i=0; i<2;i++) {
             arrayobjeto[i]=vanetza::asn1::allocate<PerceivedObject>();
@@ -219,8 +253,11 @@ namespace artery {
 //        perception->containerData.present=PerceptionData__containerData_PR_PerceivedObjectContainer;
 //        perception->containerData.choice.PerceivedObjectContainer.numberOfPerceivedObjects=1;
 
+        auto object = vanetza::asn1::allocate<PerceivedObject_t>(); //this fill the struct PerceivedObject with basic info
+//        auto perception = vanetza::asn1::allocate<CollectivePerceptionMessage>();
         for(int i=0; i<2;i++) {
-           ASN_SEQUENCE_ADD(&cpm->cpm.cpmParameters.perceivedObjectContainer,arrayobjeto[i]);
+           ASN_SEQUENCE_ADD(cpm.cpmParameters.perceivedObjectContainer,arrayobjeto[i]);
+            cpm.cpmParameters.numberOfPerceivedObjects+=1;
         }
 //        EXPECT_EQ(0, ASN_SEQUENCE_ADD(&cpm->cpm.cpmParameters.perceptionData->list, perception));
 //        EXPECT_EQ(1, cpm->cpm.cpmParameters.perceptionData->list.count);
@@ -231,14 +268,14 @@ namespace artery {
 
 //        EXPECT_TRUE(cpm.validate());
 //        EXPECT_FALSE(cpm.encode().empty());
-        vanetza::ByteBuffer buffer = cpm.encode();
+        vanetza::ByteBuffer buffer = message.encode();
         std::cout << "tamaño: " << buffer.size() << "\n";
         for (const auto byte:buffer){
             printf("%02x ",byte);
         }
 
-        auto a = cpm.decode(buffer);
-        std::cout << cpm.size();
+        auto a = message.decode(buffer);
+        std::cout << message.size();
 
 
 
@@ -284,7 +321,7 @@ namespace artery {
 //        bvc.vehicleWidth = mVehicleWidth;
 
         std::string error;
-        if (!cpm.validate(error)) {
+        if (!message.validate(error)) {
             throw cRuntimeError("Invalid High Frequency Cpm: %s", error.c_str());
         }
 
@@ -296,7 +333,7 @@ namespace artery {
 //            std::cout << "hi" << std::endl;
 //        }
 
-        return cpm;
+        return message;
     }
 
 } // namespace artery

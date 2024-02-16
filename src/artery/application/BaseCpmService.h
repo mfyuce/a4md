@@ -9,6 +9,7 @@
 #include "artery/application/VehicleDataProvider.h"
 #include <artery/traci/VehicleController.h>
 #include <vanetza/asn1/cpm.hpp>
+#include <vanetza/asn1/its/StationDataContainer.h>
 #include <vanetza/units/angle.hpp>
 #include <vanetza/units/velocity.hpp>
 #include <omnetpp.h>

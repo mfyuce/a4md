@@ -61,7 +61,7 @@ class VehicleDataProvider
 		const ReferencePosition_t& approximateReferencePosition() const { return mReferencePosition; };
 		const Heading_t& approximateHeading() const { return mHeading; };
 		const Speed_t& approximateSpeed() const { return mSpeed; };
-		const LongitudinalAcceleration_t& approximateAcceleration() const { return mLongitudinalAcceleration; };
+        const LongitudinalAcceleration_t& approximateAcceleration() const { return mLongitudinalAcceleration; };
 		const Position& position() const { return mVehicleKinematics.position; }
 		vanetza::units::GeoAngle longitude() const { return mVehicleKinematics.geo_position.longitude; } // positive for east
 		vanetza::units::GeoAngle latitude() const { return mVehicleKinematics.geo_position.latitude; } // positive for north

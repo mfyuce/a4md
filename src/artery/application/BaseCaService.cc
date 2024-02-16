@@ -204,6 +204,7 @@ namespace artery {
 
         HighFrequencyContainer_t &hfc = cam.camParameters.highFrequencyContainer;
         hfc.present = HighFrequencyContainer_PR_basicVehicleContainerHighFrequency;
+
         BasicVehicleContainerHighFrequency &bvc = hfc.choice.basicVehicleContainerHighFrequency;
         bvc.heading = mVehicleDataProvider->approximateHeading();
         bvc.speed = mVehicleDataProvider->approximateSpeed();

@@ -921,7 +921,7 @@ namespace artery {
                 return highFrequencyContainer1->present < highFrequencyContainer2->present;
             }
             if (cpm1.cpmParameters.stationDataContainer->present ==
-                HighFrequencyContainer_PR_basicVehicleContainerHighFrequency) {
+                    StationDataContainer_PR_originatingVehicleContainer) {
                 auto hfc1 = cpm1.cpmParameters.stationDataContainer->choice.originatingVehicleContainer;
                 auto hfc2 = cpm2.cpmParameters.stationDataContainer->choice.originatingVehicleContainer;
                 if (hfc1.vehicleWidth != hfc2.vehicleWidth) {

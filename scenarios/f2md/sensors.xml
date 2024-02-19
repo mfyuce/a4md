@@ -5,5 +5,6 @@
 	<sensor name="RearLongRangeRadar" type="artery.envmod.sensor.RearRadar" />
 	<sensor name="RearShortRangeRadar" type="artery.envmod.sensor.RearRadar" />
 	<sensor name="SeeThrough" type="artery.envmod.sensor.SeeThroughSensor" />
-	<sensor type="artery.envmod.sensor.CamSensor" />
+<!--	<sensor type="artery.envmod.sensor.CamSensor" />-->
+	<sensor type="artery.envmod.sensor.CpmSensor" />
 </sensors>

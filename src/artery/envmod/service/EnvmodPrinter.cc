@@ -31,7 +31,8 @@ void EnvmodPrinter::trigger()
 
     EV_DETAIL << mEgoId << "--- By category ---" << std::endl;
     printSensorObjectList("Radar Sensor Object List", filterBySensorCategory(allObjects, "Radar"));
-    printSensorObjectList("CAM Sensor Object List", filterBySensorCategory(allObjects, "CA"));
+//    printSensorObjectList("CAM Sensor Object List", filterBySensorCategory(allObjects, "CA"));
+    printSensorObjectList("CPM Sensor Object List", filterBySensorCategory(allObjects, "CPM"));
 
     EV_DETAIL << mEgoId << "--- By name ---" << std::endl;
     for (auto &sensor: mLocalEnvironmentModel->getSensors()) {

@@ -12,9 +12,9 @@
             <type pattern="artery.envmod.Car"/>
         </filters>
     </service>
-    <service type="artery.envmod.service.CollectivePerceptionMockService" name="CP">
-        <listener port="3002" />
-    </service>
+<!--    <service type="artery.envmod.service.CollectivePerceptionMockService" name="CP">-->
+<!--        <listener port="3002" />-->
+<!--    </service>-->
 <!--    <service type="artery.application.misbehavior.MisbehaviorCaService">-->
 <!--        <listener port="2001"/>-->
 <!--        <filters>-->

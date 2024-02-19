@@ -188,7 +188,7 @@ namespace artery {
 
     vanetza::asn1::Cpm
     BaseCpmService::createCollectivePerceptionMessage(uint16_t genDeltaTime) {
-        vanetza::asn1::Cpm message;
+        vanetza::asn1::Cpm &message =*( new vanetza::asn1::Cpm());
 
         PerceivedObject *arrayobjeto[2];
 
@@ -205,7 +205,7 @@ namespace artery {
         auto &basic = cpm.cpmParameters.managementContainer;
         basic.stationType = StationType_passengerCar;
         basic.referencePosition = mVehicleDataProvider->approximateReferencePosition();
-        cpm.cpmParameters.stationDataContainer = {};
+        cpm.cpmParameters.stationDataContainer =vanetza::asn1::allocate<StationDataContainer>();
         auto &hfc = *cpm.cpmParameters.stationDataContainer;
 
         hfc.present = StationDataContainer_PR_originatingVehicleContainer;
@@ -216,7 +216,7 @@ namespace artery {
         bvc.driveDirection = mVehicleDataProvider->speed().value() >= 0.0 ?
                              DriveDirection_forward : DriveDirection_backward;
         auto la = mVehicleDataProvider->approximateAcceleration();
-        bvc.longitudinalAcceleration = {};
+        bvc.longitudinalAcceleration = vanetza::asn1::allocate<LongitudinalAcceleration>();
         bvc.longitudinalAcceleration->longitudinalAccelerationValue = la.longitudinalAccelerationValue;
         bvc.longitudinalAcceleration->longitudinalAccelerationConfidence = la.longitudinalAccelerationConfidence;
 //        bvc.curvature.curvatureValue =
@@ -226,11 +226,13 @@ namespace artery {
 //        }
 //        bvc.curvature.curvatureConfidence = CurvatureConfidence_unavailable;
 //        bvc.curvatureCalculationMode = CurvatureCalculationMode_yawRateUsed;
+        bvc.yawRate = vanetza::asn1::allocate<YawRate>();
         bvc.yawRate->yawRateValue =
                 round(mVehicleDataProvider->yaw_rate(), degree_per_second) * YawRateValue_degSec_000_01ToLeft * 100.0;
         if (bvc.yawRate->yawRateValue < -32766 || bvc.yawRate->yawRateValue > 32766) {
             bvc.yawRate->yawRateValue = YawRateValue_unavailable;
         }
+        bvc.vehicleLength = vanetza::asn1::allocate<VehicleLength>();
         bvc.vehicleLength->vehicleLengthValue = mVehicleLength;
         bvc.vehicleLength->vehicleLengthConfidenceIndication =
                 VehicleLengthConfidenceIndication_noTrailerPresent;
@@ -253,8 +255,9 @@ namespace artery {
 //        perception->containerData.present=PerceptionData__containerData_PR_PerceivedObjectContainer;
 //        perception->containerData.choice.PerceivedObjectContainer.numberOfPerceivedObjects=1;
 
-        auto object = vanetza::asn1::allocate<PerceivedObject_t>(); //this fill the struct PerceivedObject with basic info
+//        auto object = vanetza::asn1::allocate<PerceivedObject_t>(); //this fill the struct PerceivedObject with basic info
 //        auto perception = vanetza::asn1::allocate<CollectivePerceptionMessage>();
+        cpm.cpmParameters.numberOfPerceivedObjects=0;
         for(int i=0; i<2;i++) {
            ASN_SEQUENCE_ADD(cpm.cpmParameters.perceivedObjectContainer,arrayobjeto[i]);
             cpm.cpmParameters.numberOfPerceivedObjects+=1;
@@ -268,14 +271,14 @@ namespace artery {
 
 //        EXPECT_TRUE(cpm.validate());
 //        EXPECT_FALSE(cpm.encode().empty());
-        vanetza::ByteBuffer buffer = message.encode();
-        std::cout << "tamaño: " << buffer.size() << "\n";
-        for (const auto byte:buffer){
-            printf("%02x ",byte);
-        }
-
-        auto a = message.decode(buffer);
-        std::cout << message.size();
+//        vanetza::ByteBuffer buffer = message.encode();
+//        std::cout << "buffer: " << buffer.size() << "\n";
+//        for (const auto byte:buffer){
+//            printf("%02x ",byte);
+//        }
+//
+//        auto a = message.decode(buffer);
+//        std::cout << message.size() << " decoded: " << a << endl;
 
 
 
@@ -320,10 +323,10 @@ namespace artery {
 //                VehicleLengthConfidenceIndication_noTrailerPresent;
 //        bvc.vehicleWidth = mVehicleWidth;
 
-        std::string error;
-        if (!message.validate(error)) {
-            throw cRuntimeError("Invalid High Frequency Cpm: %s", error.c_str());
-        }
+//        std::string error;
+//        if (!message.validate(error)) {
+//            throw cRuntimeError("Invalid High Frequency Cpm: %s", error.c_str());
+//        }
 
 //        const vanetza::units::Duration delta{
 //                (simTime()).inUnit(SIMTIME_MS) * boost::units::si::milli * boost::units::si::seconds

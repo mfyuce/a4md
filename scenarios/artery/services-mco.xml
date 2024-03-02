@@ -6,7 +6,7 @@
 	<service type="artery.application.CpmService">
 		<listener port="2001" channel="180" />
 	</service>
-	<service type="artery.application.ExampleService">
+	<service type="artery.application.ExampleServiceCpm">
 		<listener port="4711" channel="180" />
 		<listener port="4712" channel="176" />
 		<filters>

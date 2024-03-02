@@ -15,7 +15,6 @@
 
 package artery.application;
 
-//simple BaseCpmService like ItsG5Service
-moduleinterface BaseCpmService
+simple ExampleServiceCpm like ItsG5Service
 {
 }

@@ -68,7 +68,7 @@ omnetpp::SimTime CpmSensor::getValidityPeriod() const
 
 const std::string& CpmSensor::getSensorCategory() const
 {
-    static const std::string category = "CA";
+    static const std::string category = "CPM";
     return category;
 }
 

@@ -22,8 +22,8 @@ simple CpmService like BaseCpmService
         @signal[CpmReceived](type=CpmObject);
         @signal[CpmSent](type=CpmObject);
 
-        @statistic[reception](source=CpmReceived;record=vector(camStationId)?,vector(camGenerationDeltaTime)?);
-        @statistic[transmission](source=CpmSent;record=vector(camStationId)?,vector(camGenerationDeltaTime)?);
+        @statistic[reception](source=CpmReceived;record=vector(cpmStationId)?,vector(cpmGenerationDeltaTime)?);
+        @statistic[transmission](source=CpmSent;record=vector(cpmStationId)?,vector(cpmGenerationDeltaTime)?);
 
         // evaluate DCC transmission interval restrictions
         bool withDccRestriction = default(true);

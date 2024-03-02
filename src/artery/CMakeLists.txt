@@ -103,7 +103,13 @@ add_library(core SHARED
         application/misbehavior/util/F2MDParameters.cc
         application/misbehavior/util/base64.cc
         application/misbehavior/util/HelperFunctions.cc
-        )
+        application/GenerationRule.cpp
+        application/GenerationRule.h
+        application/Tracking.cpp
+        application/Tracking.h
+        application/RedundancyMitigationRule.cpp
+        application/RedundancyMitigationRule.h
+)
 find_package(CURL REQUIRED)
 #find_package(RapidJSON REQUIRED)
 target_link_libraries(core PUBLIC CURL::libcurl)

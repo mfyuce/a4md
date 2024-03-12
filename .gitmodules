@@ -14,8 +14,8 @@
 	url = https://github.com/riebl/simulte.git
 [submodule "extern/vanetza"]
 	path = extern/vanetza
-	url = https://github.com/ibr-cm/vanetza.git
-    branch = a4md
+	url = https://github.com/mfyuce/vanetza.git
+    branch = ibr_cm_a4md_rebase_to_rieble_master
 [submodule "extern/veins"]
 	path = extern/veins
 	url = https://github.com/sommer/veins.git

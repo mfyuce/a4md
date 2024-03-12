@@ -7,15 +7,13 @@
 #include "artery/envmod/EnvironmentModelObject.h"
 #include "artery/envmod/GlobalEnvironmentModel.h"
 #include "artery/envmod/Geometry.h"
-#include "artery/envmod/InterdistanceMatrix.h"
-#include "artery/envmod/PreselectionPolygon.h"
-#include "artery/envmod/PreselectionRtree.h"
 #include "artery/envmod/sensor/SensorConfiguration.h"
 #include "artery/traci/Cast.h"
 #include "artery/traci/ControllableVehicle.h"
 #include "artery/utility/IdentityRegistry.h"
 #include "traci/Core.h"
 #include <boost/geometry/geometries/register/linestring.hpp>
+#include <boost/range/adaptor/transformed.hpp>
 #include <inet/common/ModuleAccess.h>
 #include <algorithm>
 #include <array>
@@ -26,6 +24,8 @@ using namespace omnetpp;
 
 namespace artery {
 
+Define_Module(GlobalEnvironmentModel)
+
     namespace {
         const simsignal_t refreshSignal = cComponent::registerSignal("EnvironmentModel.refresh");
         const simsignal_t traciInitSignal = cComponent::registerSignal("traci.init");
@@ -34,10 +34,23 @@ namespace artery {
         const simsignal_t traciNodeAddSignal = cComponent::registerSignal("traci.node.add");
         const simsignal_t traciNodeRemoveSignal = cComponent::registerSignal("traci.node.remove");
         const simsignal_t traciNodeUpdateSignal = cComponent::registerSignal("traci.node.update");
-    }
 
-    Define_Module(GlobalEnvironmentModel)
+template<typename RT>
+typename RT::const_query_iterator
+query_intersections(RT& rtree, const std::vector<Position>& area)
+{
+#if BOOST_VERSION >= 106000 && BOOST_VERSION < 106200
+    // Boost versions 1.60 and 1.61 do not compile without copy
+    geometry::Polygon area_copy;
+    boost::geometry::convert(area, area_copy);
+    auto predicate = boost::geometry::index::intersects(area_copy);
+#else
+    auto predicate = boost::geometry::index::intersects(area);
+#endif
+    return rtree.qbegin(predicate);
+}
 
+} // namespace
 
     GlobalEnvironmentModel::GlobalEnvironmentModel() {
     }
@@ -54,13 +67,13 @@ namespace artery {
         clear();
     }
 
-    void GlobalEnvironmentModel::refresh() {
-        for (auto &object : mObjects) {
-            object->update();
+void GlobalEnvironmentModel::refresh()
+{
+    for (auto& object_kv : mObjects) {
+        object_kv.second->update();
         }
 
-        mPreselector->update();
-        mTainted = false;
+    buildObjectRtree();
 
         if (mDrawVehicles) {
             int numObjects = mObjects.size();
@@ -83,11 +96,11 @@ namespace artery {
 
             // update figures with current outlines
             int figureIndex = 0;
-            for (const auto &object : mObjects) {
+        for (const auto& object_kv : mObjects) {
                 // we add only polygon figures, thus static_cast should be safe
                 auto polygon = static_cast<cPolygonFigure *>(mDrawVehicles->getFigure(figureIndex));
                 std::vector<cFigure::Point> points;
-                for (const Position &pos : object->getOutline()) {
+            for (const Position& pos : object_kv.second->getOutline()) {
                     points.push_back(cFigure::Point{pos.x.value(), pos.y.value()});
                 }
                 polygon->setPoints(points);
@@ -107,12 +120,18 @@ namespace artery {
             }
         }
 
-        auto insertion = mObjects.insert(std::make_shared<EnvironmentModelObject>(vehicle, id));
-        mTainted |= insertion.second; /*< pending preselector update if insertion took place */
+    auto object = std::make_shared<EnvironmentModelObject>(vehicle, id);
+    auto insertion = mObjects.emplace(object->getExternalId(), object);
+    if (insertion.second) {
+        auto box = boost::geometry::return_envelope<geometry::Box>(object->getOutline());
+        mObjectRtree.insert(ObjectRtreeValue { std::move(box), object });
+    }
+    ASSERT(mObjects.size() == mObjectRtree.size());
         return insertion.second;
     }
 
-    bool GlobalEnvironmentModel::addObstacle(std::string id, std::vector<Position> outline) {
+bool GlobalEnvironmentModel::addObstacle(const std::string& id, std::vector<Position> outline)
+{
         boost::geometry::correct(outline);
         std::string invalid;
         if (!boost::geometry::is_valid(outline, invalid)) {
@@ -175,56 +194,49 @@ namespace artery {
 
         return insertion.second;
     }
-
-    void GlobalEnvironmentModel::buildObstacleRtree() {
-        std::string message;
-        for (const auto &obstacle_kv : mObstacles) {
-            auto &obstacle = obstacle_kv.second;
-            const auto &polygon = obstacle->getOutline();
-            if (boost::geometry::is_valid(polygon, message)) {
-                auto bb = boost::geometry::return_envelope<geometry::Box>(polygon);
-                mObstacleRtree.insert(std::make_pair(bb, obstacle->getId()));
-            } else {
-                throw std::runtime_error("invalid obstacle polygon #" + obstacle->getId() + " : " + message);
+void GlobalEnvironmentModel::buildObstacleRtree()
+{
+    struct envelope_maker
+    {
+        inline ObstacleRtreeValue operator()(const ObstacleDB::value_type& item) const
+        {
+            const auto& obstacle = item.second;
+            auto box = boost::geometry::return_envelope<geometry::Box>(obstacle->getOutline());
+            return ObstacleRtreeValue { std::move(box), obstacle };
             }
+    };
+
+    // bulk loading of obstacles for efficient packing
+    mObstacleRtree = ObstacleRtree { mObstacles | boost::adaptors::transformed(envelope_maker()) };
         }
+
+void GlobalEnvironmentModel::buildObjectRtree()
+{
+    struct envelope_maker
+    {
+        inline ObjectRtreeValue operator()(const ObjectDB::value_type& obj_kv) const
+        {
+            const std::shared_ptr<EnvironmentModelObject>& obj = obj_kv.second;
+            auto box = boost::geometry::return_envelope<geometry::Box>(obj->getOutline());
+            return ObjectRtreeValue { std::move(box), obj };
+        }
+    };
+
+    // use bulk loading for efficient packing
+    mObjectRtree = ObjectRtree { mObjects | boost::adaptors::transformed(envelope_maker()) };
+    mTainted = false;
     }
 
-    void GlobalEnvironmentModel::buildLaneRTree() {
-        std::string message;
-        for (const auto &lane_kv : mLanes) {
-            auto &lane = lane_kv.second;
-            const auto &shape = lane->getShape();
-            if (boost::geometry::is_valid(shape, message)) {
-                auto bb = boost::geometry::return_envelope<geometry::Box>(shape);
-                mLaneRtree.insert(std::make_pair(bb, lane->getId()));
-            } else {
-                throw std::runtime_error("invalid lane shape #" + lane->getId() + " : " + message);
-            }
-        }
-    }
-    void GlobalEnvironmentModel::buildJunctionRTree() {
-        std::string message;
-        for (const auto &junction_kv : mJunctions) {
-            auto &junction = junction_kv.second;
-            const auto &polygon = junction->getOutline();
-            if (boost::geometry::is_valid(polygon, message)) {
-                auto bb = boost::geometry::return_envelope<geometry::Box>(polygon);
-                mJunctionRtree.insert(std::make_pair(bb, junction->getId()));
-            } else {
-                throw std::runtime_error("invalid junction polygon #" + junction->getId() + " : " + message);
-            }
-        }
-    }
-
-    bool GlobalEnvironmentModel::removeVehicle(std::string objID) {
-        mTainted = true; /*< pending preselector update */
-        return mObjects.erase(objID) > 0;
+bool GlobalEnvironmentModel::removeVehicle(const std::string& objectId)
+{
+    bool erased = mObjects.erase(objectId) > 0;
+    mTainted |= erased; /*< pending object rtree update */
+    return erased;
     }
 
     void GlobalEnvironmentModel::removeVehicles() {
         mObjects.clear();
-        mPreselector->update();
+    mObjectRtree.clear();
         mTainted = false;
 
         if (mDrawVehicles) {
@@ -245,34 +257,8 @@ namespace artery {
         mJunctionRtree.clear();
     }
 
-    SensorDetection GlobalEnvironmentModel::detectObjects(
-            std::function<SensorDetection(GeometryRtree &, PreselectionMethod &)> detect) {
-        ASSERT(!mTainted); /*< object database and preselector are in sync */
-        return detect(mObstacleRtree, *mPreselector);
-    }
-
-    void GlobalEnvironmentModel::initialize() {
-        const int preselectionMethod = par("preselectionMethod");
-        switch (preselectionMethod) {
-            case 1:
-                EV_INFO << "envmod: Preselection by interdistance matrix\n";
-                mPreselector.reset(new InterdistanceMatrix(mObjects));
-                break;
-
-            case 2:
-                EV_INFO << "envmod: Preselection by polygon intersection tests\n";
-                mPreselector.reset(new PreselectionPolygon(mObjects));
-                break;
-
-            case 3:
-                EV_INFO << "envmod: Preselection by RTree\n";
-                mPreselector.reset(new PreselectionRtree(mObjects));
-                break;
-
-            default:
-                throw cRuntimeError("Unknown preselection method");
-        }
-
+void GlobalEnvironmentModel::initialize()
+{
         cModule *traci = getModuleByPath(par("traciModule"));
         if (traci) {
             traci->subscribe(traciInitSignal, this);
@@ -422,13 +408,51 @@ namespace artery {
 
     std::shared_ptr<EnvironmentModelObject> GlobalEnvironmentModel::getObject(const std::string &objId) {
         auto found = mObjects.find(objId);
-        return found != mObjects.end() ? *found : nullptr;
+    return found != mObjects.end() ? found->second : nullptr;
     }
 
     std::shared_ptr<EnvironmentModelPolygon> GlobalEnvironmentModel::getObstacle(const std::string &obsId) {
         auto found = mObstacles.find(obsId);
         return found != mObstacles.end() ? found->second : nullptr;
     }
+
+std::vector<std::shared_ptr<EnvironmentModelObject>>
+GlobalEnvironmentModel::preselectObjects(const std::string& ego, const std::vector<Position>& area)
+{
+    ASSERT(!mTainted);
+
+    boost::geometry::validity_failure_type failure;
+    if (!boost::geometry::is_valid(area, failure)) {
+        std::string error_msg =  boost::geometry::validity_failure_type_message(failure);
+        throw omnetpp::cRuntimeError("preselection polygon is invalid: %s", error_msg.c_str());
+    }
+
+    std::vector<std::shared_ptr<EnvironmentModelObject>> objectsInSearchArea;
+    ObjectRtree::const_query_iterator it = query_intersections(mObjectRtree, area);
+    for (; it != mObjectRtree.qend(); ++it) {
+        if (it->second->getExternalId() != ego) {
+            objectsInSearchArea.push_back(it->second);
+        }
+    }
+    return objectsInSearchArea;
+}
+
+std::vector<std::shared_ptr<EnvironmentModelObstacle>>
+GlobalEnvironmentModel::preselectObstacles(const std::vector<Position>& area)
+{
+    boost::geometry::validity_failure_type failure;
+    if (!boost::geometry::is_valid(area, failure)) {
+        std::string error_msg =  boost::geometry::validity_failure_type_message(failure);
+        throw omnetpp::cRuntimeError("preselection polygon is invalid: %s", error_msg.c_str());
+    }
+
+    std::vector<std::shared_ptr<EnvironmentModelObstacle>> obstacles;
+    ObstacleRtree::const_query_iterator it = query_intersections(mObstacleRtree, area);
+    for (; it != mObstacleRtree.qend(); ++it) {
+        obstacles.push_back(it->second);
+    }
+    return obstacles;
+}
 
     std::shared_ptr<EnvironmentModelLane> GlobalEnvironmentModel::getLane(const std::string &laneId) {
         auto found = mLanes.find(laneId);

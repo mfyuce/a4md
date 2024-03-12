@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 
 namespace artery
 {
@@ -23,37 +24,38 @@ public:
     using CamPredicate = std::function<bool(const Cam&)>;
     using CpmPredicate = std::function<bool(const Cpm&)>;
 
+    class AwarenessEntry
+    {
+    public:
+        AwarenessEntry(const CaObject&, omnetpp::SimTime);
+        AwarenessEntry(AwarenessEntry&&) = default;
+        AwarenessEntry& operator=(AwarenessEntry&&) = default;
+
+        omnetpp::SimTime expiry() const { return mExpiry; }
+        const Cam& cam() const { return mObject.asn1(); }
+        std::shared_ptr<const Cam> camPtr() const { return mObject.shared_ptr(); }
+
+    private:
+        omnetpp::SimTime mExpiry;
+        CaObject mObject;
+    };
+
+    using AwarenessEntries = std::map<StationID, AwarenessEntry>;
+    using AwarenessCpmEntries = std::map<StationID, AwarenessCpmEntry>;
+
     LocalDynamicMap(const Timer&);
     void updateAwareness(const CaObject&);
     void updateAwareness(const CpmObject&);
     void dropExpired();
     unsigned count(const CamPredicate&) const;
+    std::shared_ptr<const Cam> getCam(StationID) const;
+    const AwarenessEntries& allEntries() const { return mCaMessages; }
     unsigned countCpm(const CpmPredicate&) const;
 
 private:
-    struct AwarenessEntry
-    {
-        AwarenessEntry(const CaObject&, omnetpp::SimTime);
-        AwarenessEntry(AwarenessEntry&&) = default;
-        AwarenessEntry& operator=(AwarenessEntry&&) = default;
-
-        omnetpp::SimTime expiry;
-        CaObject object;
-    };
-
-    struct AwarenessCpmEntry
-    {
-        AwarenessCpmEntry(const CpmObject&, omnetpp::SimTime);
-        AwarenessCpmEntry(AwarenessCpmEntry&&) = default;
-        AwarenessCpmEntry& operator=(AwarenessCpmEntry&&) = default;
-
-        omnetpp::SimTime expiry;
-        CpmObject object;
-    };
-
     const Timer& mTimer;
-    std::map<StationID, AwarenessEntry> mCaMessages;
-    std::map<StationID, AwarenessCpmEntry> mCpmMessages;
+    AwarenessEntries mCaMessages;
+    AwarenessCpmEntries mCpmMessages;
 };
 
 } // namespace artery

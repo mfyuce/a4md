@@ -64,7 +64,7 @@ void LocalDynamicMap::dropExpired()
 {
     const auto now = omnetpp::simTime();
     for (auto it = mCaMessages.begin(); it != mCaMessages.end();) {
-        if (it->second.expiry < now) {
+        if (it->second.expiry() < now) {
             it = mCaMessages.erase(it);
         } else {
             ++it;
@@ -82,10 +82,19 @@ void LocalDynamicMap::dropExpired()
 unsigned LocalDynamicMap::count(const CamPredicate& predicate) const
 {
     return std::count_if(mCaMessages.begin(), mCaMessages.end(),
-            [&predicate](const std::pair<const StationID, AwarenessEntry>& map_entry) {
-                const Cam& cam = map_entry.second.object.asn1();
-                return predicate(cam);
+            [&predicate](const AwarenessEntries::value_type& map_entry) {
+                return predicate(map_entry.second.cam());
             });
+}
+
+std::shared_ptr<const LocalDynamicMap::Cam> LocalDynamicMap::getCam(StationID stationId) const
+{
+    auto cam = mCaMessages.find(stationId);
+    if (cam != mCaMessages.end()) {
+        return cam->second.camPtr();
+    }
+
+    return nullptr;
 }
 
 unsigned LocalDynamicMap::countCpm(const CpmPredicate& predicate) const
@@ -97,7 +106,7 @@ unsigned LocalDynamicMap::countCpm(const CpmPredicate& predicate) const
                          });
 }
 LocalDynamicMap::AwarenessEntry::AwarenessEntry(const CaObject& obj, omnetpp::SimTime t) :
-    expiry(t), object(obj)
+    mExpiry(t), mObject(obj)
 {
 }
 

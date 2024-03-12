@@ -1,6 +1,8 @@
 ansible/*.retry
 scenarios/**/*.pyc
 scenarios/*/results/*
+scenarios/*/.cmdenv-log
+scenarios/*/.qtenvrc
 scenarios/*/.tkenvrc
 src/artery/messages/*_m.cc
 src/artery/messages/*_m.h
@@ -22,3 +24,12 @@ scenarios/f2md/f2md-networks/*/e1_end_output.xml
 scenarios/f2md/f2md-networks/*/e1_OffRamp_output.xml
 scenarios/f2md/f2md-networks/*/e1_OnRamp_output.xml
 scenarios/f2md/f2md-networks/*/e1_link_output.xml
+
+# OMNeT++ IDE / Eclipse CDT auto-generated files
+.cproject
+.oppbuildspec
+.project
+.settings
+
+# CMake default directories
+build/

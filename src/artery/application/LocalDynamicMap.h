@@ -40,6 +40,22 @@ public:
         CaObject mObject;
     };
 
+    class AwarenessCpmEntry
+    {
+    public:
+        AwarenessCpmEntry(const CaObject&, omnetpp::SimTime);
+        AwarenessCpmEntry(AwarenessCpmEntry&&) = default;
+        AwarenessCpmEntry& operator=(AwarenessCpmEntry&&) = default;
+
+        omnetpp::SimTime expiry() const { return mExpiry; }
+        const Cpm& cpm() const { return mObject.asn1(); }
+        std::shared_ptr<const Cpm> cpmPtr() const { return mObject.shared_ptr(); }
+
+    private:
+        omnetpp::SimTime mExpiry;
+        CpmObject mObject;
+    };
+
     using AwarenessEntries = std::map<StationID, AwarenessEntry>;
     using AwarenessCpmEntries = std::map<StationID, AwarenessCpmEntry>;
 
